@@ -1,0 +1,49 @@
+//@version=5
+indicator("ClaudeVersTradingView — Supertrend + MA + Fibo", overlay=true)
+
+// ---- Parametres (alignes sur rules.example.json) ----
+atrPeriod = input.int(10, "Supertrend ATR period")
+atrMult   = input.float(3.0, "Supertrend multiplier")
+fastLen   = input.int(21, "EMA rapide")
+slowLen   = input.int(55, "EMA lente")
+trendLen  = input.int(200, "EMA filtre de tendance")
+fiboLookback = input.int(100, "Lookback swing Fibo")
+
+// ---- Supertrend ----
+[stValue, stDir] = ta.supertrend(atrMult, atrPeriod)
+stTrendUp = stDir < 0
+
+// ---- Moyennes mobiles ----
+emaFast = ta.ema(close, fastLen)
+emaSlow = ta.ema(close, slowLen)
+emaTrend = ta.ema(close, trendLen)
+biasHaussier = close > emaTrend and emaFast > emaSlow
+biasBaissier = close < emaTrend and emaFast < emaSlow
+
+// ---- Fibonacci (zone d'entree 0.5 / 0.618 / 0.786 sur le dernier swing) ----
+swingHigh = ta.highest(high, fiboLookback)
+swingLow  = ta.lowest(low, fiboLookback)
+fib50  = swingHigh - (swingHigh - swingLow) * 0.5
+fib618 = swingHigh - (swingHigh - swingLow) * 0.618
+fib786 = swingHigh - (swingHigh - swingLow) * 0.786
+tol = close * 0.0015
+inFiboZone = math.abs(close - fib50) <= tol or math.abs(close - fib618) <= tol or math.abs(close - fib786) <= tol
+
+// ---- Setup ----
+setupAchat = stTrendUp and biasHaussier and inFiboZone
+setupVente = not stTrendUp and biasBaissier and inFiboZone
+
+plot(stValue, "Supertrend", color = stTrendUp ? color.green : color.red)
+plot(emaFast, "EMA rapide", color=color.blue)
+plot(emaSlow, "EMA lente", color=color.orange)
+plot(emaTrend, "EMA 200", color=color.gray)
+
+plotshape(setupAchat, style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small, title="Setup achat")
+plotshape(setupVente, style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small, title="Setup vente")
+
+// ---- Alertes: le message JSON envoye au webhook. Colle exactement ceci dans la fenetre
+// "Message" de l'alerte TradingView (Creer alerte -> Condition -> Message) ----
+alertMessage = '{"secret":"REMPLACE_PAR_TON_WEBHOOK_SECRET","symbol":"{{ticker}}","timeframe":"{{interval}}","style":"daytrading","direction":"{{strategy.order.action}}","price":{{close}}}'
+
+alertcondition(setupAchat, title="Setup ACHAT", message=alertMessage)
+alertcondition(setupVente, title="Setup VENTE", message=alertMessage)

@@ -1,0 +1,17 @@
+{
+  "name": "claudeverstradingview",
+  "version": "0.1.0",
+  "description": "Signal engine: TradingView Pine alerts -> analyse (Fibonacci/Supertrend/MA) -> alertes Telegram. Aucune execution automatique de trade.",
+  "type": "module",
+  "main": "src/mcp-server.js",
+  "scripts": {
+    "webhook": "node src/webhook.js",
+    "mcp": "node src/mcp-server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "node-fetch": "^3.3.2"
+  }
+}
