@@ -1,0 +1,54 @@
+name: "DayTrading XAU/USD"
+
+on:
+  schedule:
+    # Toutes les 4 heures (correspond aux bougies 4H de la stratégie)
+    - cron: "0 */4 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (no trade, analysis only)"
+        required: false
+        default: "false"
+
+concurrency:
+  group: daytrading-xauusd
+  cancel-in-progress: false
+
+jobs:
+  trade:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install requests python-dotenv urllib3
+
+      - name: Run daytrading cycle
+        env:
+          MOONX_API_KEY:       ${{ secrets.MOONX_API_KEY }}
+          TELEGRAM_BOT_TOKEN:  ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:    ${{ secrets.TELEGRAM_CHAT_ID }}
+          DRY_RUN:             ${{ github.event.inputs.dry_run || 'false' }}
+        run: python daytrading_cycle.py
+
+      - name: Save state to repo
+        if: always()
+        run: |
+          git config user.email "actions@github.com"
+          git config user.name  "GitHub Actions [Bot 2]"
+          git add state_daytrading.json 2>/dev/null || true
+          git diff --staged --quiet && echo "Aucun changement d'état" || git commit -m "chore: daytrading state update [skip ci]"
+          git push 2>/dev/null || echo "Rien à pousser"
