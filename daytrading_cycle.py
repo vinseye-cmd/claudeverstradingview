@@ -261,6 +261,7 @@ def run():
                 if PAIR_ID.upper() in str(p.get("pairId", p.get("symbol", ""))).upper()]
     if xau_open:
         print(f"[{now}] Position {PAIR_ID} déjà ouverte ({len(xau_open)}) → NO_TRADE")
+        notify(f"⏸ <b>XAU/USD Bot 2</b> | {now}\nPosition déjà ouverte — attente clôture.")
         return {"action": "NO_TRADE", "reason": "position_already_open"}
 
     # ── 1. Biais 1D (EMA 200) ──────────────────────────────────────────────
@@ -298,6 +299,13 @@ def run():
         direction = "sell"
     else:
         print(f"[{now}] Biais 1D/4H non alignés → NO_TRADE")
+        notify(
+            f"⏳ <b>XAU/USD Bot 2 — NO TRADE</b> | {now}\n\n"
+            f"❌ Biais 1D/4H non alignés\n"
+            f"• 1D : {bias_str} (Close={close_1d:.0f} / EMA200={ema200_1d:.0f})\n"
+            f"• 4H : EMA21={ema21_4h:.0f} {'>' if trend_bull else '<'} EMA55={ema55_4h:.0f}\n"
+            f"→ Les deux timeframes doivent pointer dans le même sens."
+        )
         return {"action": "NO_TRADE", "reason": "bias_misalignment_1d_4h"}
 
     print(f"[{now}] Direction validée : {direction.upper()}")
@@ -309,10 +317,26 @@ def run():
 
     if direction == "buy" and price > fib["fib50"]:
         print(f"[{now}] Prix {price:.2f} > Fib50 {fib['fib50']:.2f} → pas en Discount → NO_TRADE")
+        notify(
+            f"⏳ <b>XAU/USD Bot 2 — NO TRADE</b> | {now}\n\n"
+            f"❌ Prix hors zone Discount\n"
+            f"• Biais : {bias_str}\n"
+            f"• Prix actuel : {price:.2f}\n"
+            f"• Fib 50% (Discount/Premium) : {fib['fib50']:.2f}\n"
+            f"→ Attente retour en zone Discount (<{fib['fib50']:.0f})."
+        )
         return {"action": "NO_TRADE", "reason": "price_not_in_discount_zone"}
 
     if direction == "sell" and price < fib["fib50"]:
         print(f"[{now}] Prix {price:.2f} < Fib50 {fib['fib50']:.2f} → pas en Premium → NO_TRADE")
+        notify(
+            f"⏳ <b>XAU/USD Bot 2 — NO TRADE</b> | {now}\n\n"
+            f"❌ Prix hors zone Premium\n"
+            f"• Biais : {bias_str}\n"
+            f"• Prix actuel : {price:.2f}\n"
+            f"• Fib 50% (Discount/Premium) : {fib['fib50']:.2f}\n"
+            f"→ Attente retour en zone Premium (>{fib['fib50']:.0f})."
+        )
         return {"action": "NO_TRADE", "reason": "price_not_in_premium_zone"}
 
     zone_str = "Discount ✅" if direction == "buy" else "Premium ✅"
@@ -323,6 +347,13 @@ def run():
     in_fvg, matched_fvg = price_in_fvg(price, fvgs)
     if not in_fvg:
         print(f"[{now}] Aucun FVG actif pour {direction} au prix {price:.2f} → NO_TRADE")
+        notify(
+            f"⏳ <b>XAU/USD Bot 2 — NO TRADE</b> | {now}\n\n"
+            f"❌ Aucun FVG/Imbalance actif\n"
+            f"• Biais : {bias_str} | Zone : {zone_str}\n"
+            f"• Prix actuel : {price:.2f}\n"
+            f"→ Attente d'un FVG en zone {zone_str}."
+        )
         return {"action": "NO_TRADE", "reason": "no_active_fvg"}
 
     print(f"[FVG] Match : {matched_fvg['low']:.2f} – {matched_fvg['high']:.2f} ({matched_fvg['type']})")
