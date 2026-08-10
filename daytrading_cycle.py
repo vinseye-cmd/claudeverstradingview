@@ -63,28 +63,54 @@ def _moonx_call(method_name, arguments):
     )
     resp.raise_for_status()
     data = resp.json()
+    print(f"[DEBUG:{method_name}] top-level keys: {list(data.keys())}")
+
     if "error" in data:
         raise RuntimeError(f"Moonx error [{method_name}]: {data['error']}")
-    # Réponse MCP : result.content[0].text contient du JSON sérialisé
-    raw = data.get("result", {})
-    if isinstance(raw, dict) and "content" in raw:
-        text = raw["content"][0].get("text", "null")
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            return {"raw": text}
-    return raw
+
+    result = data.get("result", data)
+    print(f"[DEBUG:{method_name}] result type: {type(result).__name__}, "
+          f"keys: {list(result.keys()) if isinstance(result, dict) else 'N/A (list)'}")
+
+    # Cas 1 : result est déjà une liste (candles, positions...)
+    if isinstance(result, list):
+        return result
+
+    if isinstance(result, dict):
+        # Cas 2 : format MCP → result.content[0].text contient du JSON sérialisé
+        if "content" in result:
+            text = result["content"][0].get("text", "null")
+            print(f"[DEBUG:{method_name}] content text (200c): {text[:200]}")
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                return {"raw": text}
+
+        # Cas 3 : données directement dans un sous-champ courant
+        for key in ("candles", "data", "bars", "positions", "price"):
+            if key in result:
+                return result[key]
+
+    # Retour brut pour parsing manuel côté appelant
+    return result
 
 
 def get_candles(symbol, interval, limit=200):
-    candles = _moonx_call("get_candles", {
+    raw = _moonx_call("get_candles", {
         "symbol": symbol,
         "interval": interval,
         "limit": limit,
     })
-    if not isinstance(candles, list):
-        raise RuntimeError(f"Format bougies inattendu : {type(candles)}")
-    return candles
+    # Si la réponse est encore un dict, on cherche les bougies à l'intérieur
+    if isinstance(raw, dict):
+        print(f"[DEBUG:get_candles] dict reçu, clés : {list(raw.keys())}")
+        for key in ("candles", "data", "bars", "ohlcv", "result"):
+            if key in raw and isinstance(raw[key], list):
+                return raw[key]
+        raise RuntimeError(f"Impossible de trouver les bougies dans : {list(raw.keys())}")
+    if not isinstance(raw, list):
+        raise RuntimeError(f"Format bougies inattendu : {type(raw)}")
+    return raw
 
 
 def get_current_price():
