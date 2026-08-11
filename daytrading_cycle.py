@@ -137,14 +137,14 @@ def open_position(side, lots, sl, tp):
 
 # ─── Telegram ─────────────────────────────────────────────────────────────────
 def notify(text):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}
+    print(f"[telegram] envoi → chat_id={TELEGRAM_CHAT_ID} token_prefix={TELEGRAM_TOKEN[:10]}...")
     try:
-        requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"},
-            timeout=10,
-        )
+        r = requests.post(url, json=payload, timeout=10)
+        print(f"[telegram] réponse HTTP {r.status_code}: {r.text[:300]}")
     except Exception as e:
-        print(f"[telegram] erreur: {e}")
+        print(f"[telegram] erreur réseau: {e}")
 
 
 # ─── Indicateurs techniques ───────────────────────────────────────────────────
