@@ -39,9 +39,10 @@ LEVERAGE      = 10
 MARGIN_USDT   = 10.0    # marge par trade (USDT)
 SL_PCT        = 1.0     # stop-loss en % du prix d'entrée
 TP_PCT        = 2.0     # take-profit en % (ratio 1:2)
-EMA200_PERIOD = 200
-FIBO_LOOKBACK = 50      # bougies 4H pour swing Fibonacci
-FVG_LOOKBACK  = 30      # bougies 4H pour chercher les FVG
+EMA_TREND_PERIOD = 20   # période EMA biais 1D (Moonx limite à ~26 bougies 1D pour XAU/USD)
+FIBO_LOOKBACK    = 20   # bougies 4H pour swing Fibonacci
+FVG_LOOKBACK     = 20   # bougies 4H pour chercher les FVG
+MIN_1D_CANDLES   = 15   # minimum de bougies 1D requises
 
 STATE_FILE = "state_daytrading.json"
 
@@ -265,18 +266,24 @@ def run():
         return {"action": "NO_TRADE", "reason": "position_already_open"}
 
     # ── 1. Biais 1D (EMA 200) ──────────────────────────────────────────────
-    candles_1d = get_candles(PAIR_ID, "1d", 220)
+    candles_1d = get_candles(PAIR_ID, "1d", 50)
     closes_1d  = [float(c.get("close", c.get("c", 0))) for c in candles_1d]
-    if len(closes_1d) < EMA200_PERIOD:
+    if len(closes_1d) < MIN_1D_CANDLES:
+        msg = (f"⚠️ <b>XAU/USD Bot 2 — Données insuffisantes</b> | {now}\n\n"
+               f"Seulement {len(closes_1d)} bougies 1D disponibles (minimum {MIN_1D_CANDLES}).\n"
+               f"Moonx limite l'historique XAU/USD forex.")
+        notify(msg)
         print(f"[{now}] Bougies 1D insuffisantes ({len(closes_1d)}) → NO_TRADE")
         return {"action": "NO_TRADE", "reason": "insufficient_1d_candles"}
 
-    ema200_1d = calc_ema(closes_1d, EMA200_PERIOD)
+    period_1d = min(EMA_TREND_PERIOD, len(closes_1d) - 2)
+    ema200_1d = calc_ema(closes_1d, period_1d)
+    print(f"[1D] Bougies disponibles={len(closes_1d)}, période EMA utilisée={period_1d}")
     close_1d  = closes_1d[-1]
     bias_bull = close_1d > ema200_1d
     bias_bear = close_1d < ema200_1d
     bias_str  = "HAUSSIER 🟢" if bias_bull else "BAISSIER 🔴"
-    print(f"[1D] Close={close_1d:.2f}  EMA200={ema200_1d:.2f}  Biais={bias_str}")
+    print(f"[1D] Close={close_1d:.2f}  EMA{period_1d}={ema200_1d:.2f}  Biais={bias_str}")
 
     # ── 2. Confirmation 4H (EMA 21 / 55) ──────────────────────────────────
     candles_4h = get_candles(PAIR_ID, "4h", 110)
@@ -302,7 +309,7 @@ def run():
         notify(
             f"⏳ <b>XAU/USD Bot 2 — NO TRADE</b> | {now}\n\n"
             f"❌ Biais 1D/4H non alignés\n"
-            f"• 1D : {bias_str} (Close={close_1d:.0f} / EMA200={ema200_1d:.0f})\n"
+            f"• 1D : {bias_str} (Close={close_1d:.0f} / EMA{period_1d}={ema200_1d:.0f})\n"
             f"• 4H : EMA21={ema21_4h:.0f} {'>' if trend_bull else '<'} EMA55={ema55_4h:.0f}\n"
             f"→ Les deux timeframes doivent pointer dans le même sens."
         )
