@@ -139,7 +139,7 @@ def open_position(side, lots, sl, tp):
 # ─── Telegram ─────────────────────────────────────────────────────────────────
 def notify(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
     print(f"[telegram] envoi → chat_id={TELEGRAM_CHAT_ID} token_prefix={TELEGRAM_TOKEN[:10]}...")
     try:
         r = requests.post(url, json=payload, timeout=10)
@@ -262,14 +262,14 @@ def run():
                 if PAIR_ID.upper() in str(p.get("pairId", p.get("symbol", ""))).upper()]
     if xau_open:
         print(f"[{now}] Position {PAIR_ID} déjà ouverte ({len(xau_open)}) → NO_TRADE")
-        notify(f"⏸ <b>XAU/USD Bot 2</b> | {now}\nPosition déjà ouverte — attente clôture.")
+        notify(f"⏸ XAU/USD Bot 2 | {now}\nPosition deja ouverte — attente cloture.")
         return {"action": "NO_TRADE", "reason": "position_already_open"}
 
     # ── 1. Biais 1D (EMA 200) ──────────────────────────────────────────────
     candles_1d = get_candles(PAIR_ID, "1d", 50)
     closes_1d  = [float(c.get("close", c.get("c", 0))) for c in candles_1d]
     if len(closes_1d) < MIN_1D_CANDLES:
-        msg = (f"⚠️ <b>XAU/USD Bot 2 — Données insuffisantes</b> | {now}\n\n"
+        msg = (f"⚠️ XAU/USD Bot 2 — Donnees insuffisantes | {now}\n\n"
                f"Seulement {len(closes_1d)} bougies 1D disponibles (minimum {MIN_1D_CANDLES}).\n"
                f"Moonx limite l'historique XAU/USD forex.")
         notify(msg)
@@ -307,11 +307,11 @@ def run():
     else:
         print(f"[{now}] Biais 1D/4H non alignés → NO_TRADE")
         notify(
-            f"⏳ <b>XAU/USD Bot 2 — NO TRADE</b> | {now}\n\n"
-            f"❌ Biais 1D/4H non alignés\n"
+            f"⏳ XAU/USD Bot 2 — NO TRADE | {now}\n\n"
+            f"Biais 1D/4H non alignes\n"
             f"• 1D : {bias_str} (Close={close_1d:.0f} / EMA{period_1d}={ema200_1d:.0f})\n"
-            f"• 4H : EMA21={ema21_4h:.0f} {'>' if trend_bull else '<'} EMA55={ema55_4h:.0f}\n"
-            f"→ Les deux timeframes doivent pointer dans le même sens."
+            f"• 4H : EMA21={ema21_4h:.0f} {'>' if trend_bull else 'v'} EMA55={ema55_4h:.0f}\n"
+            f"Les deux timeframes doivent pointer dans le meme sens."
         )
         return {"action": "NO_TRADE", "reason": "bias_misalignment_1d_4h"}
 
@@ -325,24 +325,24 @@ def run():
     if direction == "buy" and price > fib["fib50"]:
         print(f"[{now}] Prix {price:.2f} > Fib50 {fib['fib50']:.2f} → pas en Discount → NO_TRADE")
         notify(
-            f"⏳ <b>XAU/USD Bot 2 — NO TRADE</b> | {now}\n\n"
-            f"❌ Prix hors zone Discount\n"
+            f"⏳ XAU/USD Bot 2 — NO TRADE | {now}\n\n"
+            f"Prix hors zone Discount\n"
             f"• Biais : {bias_str}\n"
             f"• Prix actuel : {price:.2f}\n"
-            f"• Fib 50% (Discount/Premium) : {fib['fib50']:.2f}\n"
-            f"→ Attente retour en zone Discount (<{fib['fib50']:.0f})."
+            f"• Fib 50% : {fib['fib50']:.2f}\n"
+            f"Attente retour en zone Discount (sous {fib['fib50']:.0f})."
         )
         return {"action": "NO_TRADE", "reason": "price_not_in_discount_zone"}
 
     if direction == "sell" and price < fib["fib50"]:
         print(f"[{now}] Prix {price:.2f} < Fib50 {fib['fib50']:.2f} → pas en Premium → NO_TRADE")
         notify(
-            f"⏳ <b>XAU/USD Bot 2 — NO TRADE</b> | {now}\n\n"
-            f"❌ Prix hors zone Premium\n"
+            f"⏳ XAU/USD Bot 2 — NO TRADE | {now}\n\n"
+            f"Prix hors zone Premium\n"
             f"• Biais : {bias_str}\n"
             f"• Prix actuel : {price:.2f}\n"
-            f"• Fib 50% (Discount/Premium) : {fib['fib50']:.2f}\n"
-            f"→ Attente retour en zone Premium (>{fib['fib50']:.0f})."
+            f"• Fib 50% : {fib['fib50']:.2f}\n"
+            f"Attente retour en zone Premium (au-dessus de {fib['fib50']:.0f})."
         )
         return {"action": "NO_TRADE", "reason": "price_not_in_premium_zone"}
 
@@ -355,11 +355,11 @@ def run():
     if not in_fvg:
         print(f"[{now}] Aucun FVG actif pour {direction} au prix {price:.2f} → NO_TRADE")
         notify(
-            f"⏳ <b>XAU/USD Bot 2 — NO TRADE</b> | {now}\n\n"
-            f"❌ Aucun FVG/Imbalance actif\n"
+            f"⏳ XAU/USD Bot 2 — NO TRADE | {now}\n\n"
+            f"Aucun FVG/Imbalance actif\n"
             f"• Biais : {bias_str} | Zone : {zone_str}\n"
             f"• Prix actuel : {price:.2f}\n"
-            f"→ Attente d'un FVG en zone {zone_str}."
+            f"Attente d'un FVG en zone {zone_str}."
         )
         return {"action": "NO_TRADE", "reason": "no_active_fvg"}
 
@@ -392,20 +392,20 @@ def run():
 
     # ── 9. Notification Telegram ───────────────────────────────────────────
     emoji = "📈" if direction == "buy" else "📉"
-    direction_fr = "ACHAT 🟢" if direction == "buy" else "VENTE 🔴"
+    direction_fr = "ACHAT" if direction == "buy" else "VENTE"
     msg = (
-        f"{emoji} <b>TRADE EXÉCUTÉ — XAU/USD (Bot 2)</b>\n\n"
-        f"Direction : <b>{direction_fr}</b>\n"
-        f"Entrée    : <b>{price:.2f} USD</b>\n"
-        f"Stop-Loss : {sl:.2f} ({SL_PCT}%)\n"
+        f"{emoji} TRADE EXECUTE — XAU/USD Bot 2\n\n"
+        f"Direction  : {direction_fr}\n"
+        f"Entree     : {price:.2f} USD\n"
+        f"Stop-Loss  : {sl:.2f} ({SL_PCT}%)\n"
         f"Take-Profit: {tp:.2f} ({TP_PCT}%)\n"
-        f"Lots      : {lots} | Marge : {MARGIN_USDT} USDT | Levier : {LEVERAGE}x\n\n"
-        f"━━ Analyse ━━\n"
-        f"Biais 1D  : {bias_str} (EMA200={ema200_1d:.0f})\n"
-        f"Trend 4H  : EMA21={ema21_4h:.0f} {'>' if trend_bull else '<'} EMA55={ema55_4h:.0f}\n"
-        f"Zone Fib  : {zone_str} (Fib50={fib['fib50']:.0f})\n"
-        f"FVG       : {matched_fvg['low']:.0f}–{matched_fvg['high']:.0f}\n\n"
-        f"🤖 Claude DayTrading Bot | {now}"
+        f"Lots       : {lots} | Marge : {MARGIN_USDT} USDT | Levier : {LEVERAGE}x\n\n"
+        f"-- Analyse --\n"
+        f"Biais 1D : {bias_str} (EMA{period_1d}={ema200_1d:.0f})\n"
+        f"Trend 4H : EMA21={ema21_4h:.0f} {'>' if trend_bull else 'v'} EMA55={ema55_4h:.0f}\n"
+        f"Zone Fib : {zone_str} (Fib50={fib['fib50']:.0f})\n"
+        f"FVG      : {matched_fvg['low']:.0f}-{matched_fvg['high']:.0f}\n\n"
+        f"Claude DayTrading Bot | {now}"
     )
     notify(msg)
 
@@ -429,8 +429,8 @@ if __name__ == "__main__":
         tb = traceback.format_exc()
         print(f"[ERREUR] {exc}\n{tb}")
         err_msg = (
-            f"❌ <b>Erreur Bot DayTrading XAU/USD</b>\n\n"
-            f"<code>{type(exc).__name__}: {exc}</code>"
+            f"ERREUR Bot DayTrading XAU/USD\n\n"
+            f"{type(exc).__name__}: {exc}"
         )
         try:
             requests.post(
