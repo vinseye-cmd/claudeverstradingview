@@ -37,12 +37,13 @@ TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 PAIR_ID       = "XAUUSD"
 LEVERAGE      = 10
 MARGIN_USDT   = 10.0    # marge par trade (USDT)
-SL_PCT        = 1.0     # stop-loss en % du prix d'entrée
-TP_PCT        = 2.0     # take-profit en % (ratio 1:2)
+SL_PCT        = 1.5     # stop-loss 1.5% (plus de marge pour le bruit XAU/USD)
+TP_PCT        = 3.0     # take-profit 3% → ratio 1:2 maintenu
 EMA_TREND_PERIOD = 20   # période EMA biais 1D (Moonx limite à ~26 bougies 1D pour XAU/USD)
-FIBO_LOOKBACK    = 20   # bougies 4H pour swing Fibonacci
-FVG_LOOKBACK     = 20   # bougies 4H pour chercher les FVG
+FIBO_LOOKBACK    = 50   # bougies 4H pour swing Fibonacci (~8 jours, plus stable)
+FVG_LOOKBACK     = 30   # bougies 4H pour chercher les FVG (~5 jours)
 MIN_1D_CANDLES   = 15   # minimum de bougies 1D requises
+MIN_LOTS         = 0.01 # lot minimum accepté par Moonx pour XAUUSD
 
 STATE_FILE = "state_daytrading.json"
 
@@ -127,13 +128,33 @@ def list_open_positions():
 
 
 def open_position(side, lots, sl, tp):
-    return _moonx_call("open_forex_position", {
+    result = _moonx_call("open_forex_position", {
         "pairId":     PAIR_ID,
         "side":       side,
         "lots":       lots,
         "stopLoss":   round(sl, 2),
         "takeProfit": round(tp, 2),
     })
+    print(f"[Moonx open_forex_position] reponse complete: {result}")
+
+    # Détecter les erreurs dans la réponse Moonx (format texte libre)
+    if isinstance(result, dict):
+        raw_text = str(result.get("raw", ""))
+        if raw_text and any(w in raw_text.lower() for w in
+                            ("error", "fail", "invalid", "rejected", "insufficient",
+                             "not enough", "minimum", "exceed")):
+            raise RuntimeError(f"Moonx a rejete l'ordre: {raw_text[:500]}")
+
+        # La réponse doit contenir un identifiant de position
+        pos_id = (result.get("positionId") or result.get("id")
+                  or result.get("position_id") or result.get("orderId")
+                  or result.get("tradeId"))
+        if not pos_id:
+            raise RuntimeError(
+                f"Position non creee — reponse sans ID de position: {result}"
+            )
+
+    return result
 
 
 # ─── Telegram ─────────────────────────────────────────────────────────────────
@@ -224,14 +245,15 @@ def fibonacci_zones(candles, lookback):
 
 def calc_lots(entry_price):
     """
-    Volume en lots pour XAUUSD (CFD Moonx).
-    Hypothèse : 1 lot = 1 oz d'or (micro-lot).
-    exposition = marge × levier → lots = exposition / prix.
-    Minimum : 0.01 lots.
+    Volume en lots pour XAUUSD CFD (Moonx).
+    Hypothèse Moonx : 1 lot = 1 oz (micro-lot) → exposition = marge × levier / prix.
+    Avec 10 USDT × 10x = 100 USDT exposition → lots ≈ 0.02 au prix ~4400.
     """
     exposure = MARGIN_USDT * LEVERAGE
     lots = exposure / entry_price
-    return max(0.01, round(lots, 2))
+    lots = max(MIN_LOTS, round(lots, 2))
+    print(f"[calc_lots] exposition={exposure:.0f} USDT | prix={entry_price:.2f} | lots={lots}")
+    return lots
 
 
 # ─── État persistant ──────────────────────────────────────────────────────────
@@ -377,12 +399,27 @@ def run():
     print(f"[Trade] {direction.upper()} {lots} lots | Entry={price:.2f} | SL={sl} | TP={tp}")
 
     # ── 7. Exécution de l'ordre ────────────────────────────────────────────
-    result     = open_position(direction, lots, sl, tp)
-    pos_id     = (result.get("positionId")
-                  or result.get("id")
-                  or result.get("position_id")
-                  or "unknown")
-    print(f"[Moonx] Réponse : {result}")
+    try:
+        result = open_position(direction, lots, sl, tp)
+    except RuntimeError as order_err:
+        err_detail = str(order_err)
+        print(f"[ERREUR] open_position rejete: {err_detail}")
+        notify(
+            f"ORDRE REJETE — XAU/USD Bot 2\n\n"
+            f"Direction : {direction.upper()}\n"
+            f"Lots      : {lots} | SL={sl:.2f} | TP={tp:.2f}\n"
+            f"Raison    : {err_detail[:300]}\n\n"
+            f"Verifier les parametres Moonx (margin, lots min/max).\n"
+            f"{now}"
+        )
+        return {"action": "ERROR", "reason": "order_rejected", "detail": err_detail}
+
+    pos_id = (result.get("positionId")
+              or result.get("id")
+              or result.get("position_id")
+              or result.get("tradeId")
+              or "unknown")
+    print(f"[Moonx] Position creee ID={pos_id}")
 
     # ── 8. Mise à jour de l'état ───────────────────────────────────────────
     state["last_position_id"] = pos_id
@@ -399,7 +436,8 @@ def run():
         f"Entree     : {price:.2f} USD\n"
         f"Stop-Loss  : {sl:.2f} ({SL_PCT}%)\n"
         f"Take-Profit: {tp:.2f} ({TP_PCT}%)\n"
-        f"Lots       : {lots} | Marge : {MARGIN_USDT} USDT | Levier : {LEVERAGE}x\n\n"
+        f"Lots       : {lots} | Marge : {MARGIN_USDT} USDT | Levier : {LEVERAGE}x\n"
+        f"Position ID: {pos_id}\n\n"
         f"-- Analyse --\n"
         f"Biais 1D : {bias_str} (EMA{period_1d}={ema200_1d:.0f})\n"
         f"Trend 4H : EMA21={ema21_4h:.0f} {'>' if trend_bull else 'v'} EMA55={ema55_4h:.0f}\n"
@@ -435,7 +473,7 @@ if __name__ == "__main__":
         try:
             requests.post(
                 f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage",
-                json={"chat_id": os.environ["TELEGRAM_CHAT_ID"], "text": err_msg, "parse_mode": "HTML"},
+                json={"chat_id": os.environ["TELEGRAM_CHAT_ID"], "text": err_msg},
                 timeout=10,
             )
         except Exception:
