@@ -35,8 +35,8 @@ TELEGRAM_TOKEN   = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
 PAIR_ID       = "XAUUSD"
-LEVERAGE      = 10
-MARGIN_USDT   = 10.0    # marge par trade (USDT)
+LEVERAGE      = 5       # levier RÉEL appliqué par Moonx sur XAU/USD CFD (vérifié empiriquement)
+MARGIN_USDT   = 9.0     # marge par trade (USDT) — laisse $1 de buffer sur le wallet de $10
 SL_PCT        = 1.5     # stop-loss 1.5% (plus de marge pour le bruit XAU/USD)
 TP_PCT        = 3.0     # take-profit 3% → ratio 1:2 maintenu
 EMA_TREND_PERIOD = 20   # période EMA biais 1D (Moonx limite à ~26 bougies 1D pour XAU/USD)
