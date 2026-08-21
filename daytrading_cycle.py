@@ -346,7 +346,7 @@ def run():
 
     print(f"[{now}] Direction validée : {direction.upper()}")
 
-    # ── 4. Données 1H — prix d'entrée, Fibonacci et FVG ───────────────────
+    # ── 4. Données 1H — prix d'entrée + FVG ───────────────────────────────
     candles_1h = get_candles(PAIR_ID, "1h", 100)
     closes_1h  = [float(c.get("close", c.get("c", 0))) for c in candles_1h]
     if len(closes_1h) < 30:
@@ -355,49 +355,20 @@ def run():
     price = closes_1h[-1]
     print(f"[1H] Price={price:.2f}  (bougies disponibles={len(closes_1h)})")
 
-    # ── 5. Fibonacci 1H — zone Discount/Premium ─────────────────────────────
-    fib = fibonacci_zones(candles_1h, FIBO_LOOKBACK)
-    print(f"[Fib] SwingH={fib['swing_high']:.2f}  SwingL={fib['swing_low']:.2f}  "
-          f"Fib50={fib['fib50']:.2f}")
-
-    if direction == "buy" and price > fib["fib50"]:
-        print(f"[{now}] Prix {price:.2f} > Fib50 {fib['fib50']:.2f} → pas en Discount → NO_TRADE")
-        notify(
-            f"⏳ XAU/USD Bot 2 — NO TRADE | {now}\n\n"
-            f"Prix hors zone Discount\n"
-            f"• Biais : {bias_str}\n"
-            f"• Prix actuel : {price:.2f}\n"
-            f"• Fib 50% : {fib['fib50']:.2f}\n"
-            f"Attente retour en zone Discount (sous {fib['fib50']:.0f})."
-        )
-        return {"action": "NO_TRADE", "reason": "price_not_in_discount_zone"}
-
-    if direction == "sell" and price < fib["fib50"]:
-        print(f"[{now}] Prix {price:.2f} < Fib50 {fib['fib50']:.2f} → pas en Premium → NO_TRADE")
-        notify(
-            f"⏳ XAU/USD Bot 2 — NO TRADE | {now}\n\n"
-            f"Prix hors zone Premium\n"
-            f"• Biais : {bias_str}\n"
-            f"• Prix actuel : {price:.2f}\n"
-            f"• Fib 50% : {fib['fib50']:.2f}\n"
-            f"Attente retour en zone Premium (au-dessus de {fib['fib50']:.0f})."
-        )
-        return {"action": "NO_TRADE", "reason": "price_not_in_premium_zone"}
-
-    zone_str = "Discount ✅" if direction == "buy" else "Premium ✅"
-    print(f"[{now}] Zone Fibonacci : {zone_str}")
-
-    # ── 6. FVG / Imbalance 1H ─────────────────────────────────────────────
+    # ── 5. FVG / Imbalance 1H — zone d'entrée ─────────────────────────────
+    # Le FVG est lui-même la zone de déséquilibre (Discount/Premium implicite).
+    # Le filtre Fibonacci a été retiré car en trend fort (ADX>30) le prix ne
+    # revient jamais à 50% du swing avant de repartir.
     fvgs = detect_fvgs(candles_1h, direction, FVG_LOOKBACK)
     in_fvg, matched_fvg = price_in_fvg(price, fvgs)
     if not in_fvg:
         print(f"[{now}] Aucun FVG actif pour {direction} au prix {price:.2f} → NO_TRADE")
         notify(
             f"⏳ XAU/USD Bot 2 — NO TRADE | {now}\n\n"
-            f"Aucun FVG/Imbalance actif\n"
-            f"• Biais : {bias_str} | Zone : {zone_str}\n"
+            f"Aucun FVG/Imbalance 1H actif\n"
+            f"• Biais : {bias_str}\n"
             f"• Prix actuel : {price:.2f}\n"
-            f"Attente d'un FVG en zone {zone_str}."
+            f"Attente d'un retour du prix dans un FVG {direction.upper()}."
         )
         return {"action": "NO_TRADE", "reason": "no_active_fvg"}
 
@@ -457,8 +428,7 @@ def run():
         f"-- Analyse --\n"
         f"Biais 1D : {bias_str} (EMA{period_1d}={ema200_1d:.0f})\n"
         f"Trend 4H : EMA21={ema21_4h:.0f} {'>' if trend_bull else 'v'} EMA55={ema55_4h:.0f}\n"
-        f"Zone Fib : {zone_str} (Fib50={fib['fib50']:.0f}) — swing 1H\n"
-        f"FVG 1H   : {matched_fvg['low']:.0f}-{matched_fvg['high']:.0f}\n\n"
+        f"FVG 1H   : {matched_fvg['low']:.0f}-{matched_fvg['high']:.0f} ({matched_fvg['type']})\n\n"
         f"Claude DayTrading Bot | {now}"
     )
     notify(msg)
