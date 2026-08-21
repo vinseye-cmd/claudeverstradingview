@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
 daytrading_cycle.py — Bot 2 : DayTrading XAU/USD via Moonx CFD
-Stratégie SMC/ICT :
-  - Biais 1D : EMA 200 (au-dessus = achat seulement, en-dessous = vente seulement)
-  - Confirmation 4H : EMA21 > EMA55 (achat) ou EMA21 < EMA55 (vente)
-  - Entrée : prix dans un FVG/Imbalance en zone Discount (<0.5 Fibonacci) pour achat
-              ou en zone Premium (>0.5 Fibonacci) pour vente
-  - SL : 1% du prix d'entrée | TP : 2% du prix d'entrée (ratio 1:2)
-  - Marge : 10 USDT × 10x levier = exposition 100 USDT par trade
-  - Aucun trade si conditions non réunies (retourne NO_TRADE avec raison)
-Lancé par GitHub Actions toutes les 4 heures.
+Stratégie SMC/ICT multi-timeframe :
+  - Biais 1D  : EMA20 (au-dessus = achat seulement, en-dessous = vente seulement)
+  - Trend 4H  : EMA21 > EMA55 (achat) ou EMA21 < EMA55 (vente)
+  - Entrée 1H : FVG/Imbalance en zone Discount (Fibonacci) pour achat
+                ou en zone Premium (Fibonacci) pour vente
+  - Sessions  : London (07h-12h UTC) + New York (13h-20h UTC) — Asian exclue
+  - SL : ~2x ATR_1H (~0.8%) | TP : 1.6% (ratio 1:2)
+  - Marge : 9 USDT x 5x levier reel Moonx = 45 USDT exposition (~0.01 lots)
+Lancé par GitHub Actions toutes les heures de 07h à 20h UTC.
 """
 
 import os
@@ -37,13 +37,15 @@ TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 PAIR_ID       = "XAUUSD"
 LEVERAGE      = 5       # levier RÉEL appliqué par Moonx sur XAU/USD CFD (vérifié empiriquement)
 MARGIN_USDT   = 9.0     # marge par trade (USDT) — laisse $1 de buffer sur le wallet de $10
-SL_PCT        = 1.5     # stop-loss 1.5% (plus de marge pour le bruit XAU/USD)
-TP_PCT        = 3.0     # take-profit 3% → ratio 1:2 maintenu
-EMA_TREND_PERIOD = 20   # période EMA biais 1D (Moonx limite à ~26 bougies 1D pour XAU/USD)
-FIBO_LOOKBACK    = 50   # bougies 4H pour swing Fibonacci (~8 jours, plus stable)
-FVG_LOOKBACK     = 30   # bougies 4H pour chercher les FVG (~5 jours)
+SL_PCT        = 0.8     # stop-loss ~2x ATR_1H (ATR 1H ≈ 0.4% du prix)
+TP_PCT        = 1.6     # take-profit → ratio 1:2 maintenu
+EMA_TREND_PERIOD = 20   # période EMA biais 1D
+FIBO_LOOKBACK    = 30   # bougies 1H pour swing Fibonacci (~1.25 jours)
+FVG_LOOKBACK     = 20   # bougies 1H pour chercher les FVG
 MIN_1D_CANDLES   = 15   # minimum de bougies 1D requises
 MIN_LOTS         = 0.01 # lot minimum accepté par Moonx pour XAUUSD
+SESSION_START    = 7    # heure UTC début session active (London open)
+SESSION_END      = 20   # heure UTC fin session active (NY close)
 
 STATE_FILE = "state_daytrading.json"
 
@@ -278,7 +280,13 @@ def run():
 
     state = load_state()
 
-    # ── 0. Vérifier position déjà ouverte ──────────────────────────────────
+    # ── 0. Filtre session — London (07h-12h UTC) + NY (13h-20h UTC) ───────
+    hour_utc = datetime.now(timezone.utc).hour
+    if not (SESSION_START <= hour_utc < SESSION_END):
+        print(f"[{now}] Hors session active ({hour_utc}h UTC, fenetre {SESSION_START}h-{SESSION_END}h) → NO_TRADE silencieux")
+        return {"action": "NO_TRADE", "reason": "outside_session"}
+
+    # ── 1. Vérifier position déjà ouverte ──────────────────────────────────
     open_pos = list_open_positions()
     xau_open = [p for p in open_pos
                 if PAIR_ID.upper() in str(p.get("pairId", p.get("symbol", ""))).upper()]
@@ -318,8 +326,7 @@ def run():
     ema55_4h  = calc_ema(closes_4h, 55)
     trend_bull = ema21_4h > ema55_4h
     trend_bear = ema21_4h < ema55_4h
-    price      = closes_4h[-1]
-    print(f"[4H] Price={price:.2f}  EMA21={ema21_4h:.2f}  EMA55={ema55_4h:.2f}")
+    print(f"[4H] EMA21={ema21_4h:.2f}  EMA55={ema55_4h:.2f}  trend={'BULL' if trend_bull else 'BEAR'}")
 
     # ── 3. Alignement biais 1D + tendance 4H ──────────────────────────────
     if bias_bull and trend_bull:
@@ -339,8 +346,17 @@ def run():
 
     print(f"[{now}] Direction validée : {direction.upper()}")
 
-    # ── 4. Fibonacci — zone Discount/Premium ────────────────────────────────
-    fib = fibonacci_zones(candles_4h, FIBO_LOOKBACK)
+    # ── 4. Données 1H — prix d'entrée, Fibonacci et FVG ───────────────────
+    candles_1h = get_candles(PAIR_ID, "1h", 100)
+    closes_1h  = [float(c.get("close", c.get("c", 0))) for c in candles_1h]
+    if len(closes_1h) < 30:
+        print(f"[{now}] Bougies 1H insuffisantes ({len(closes_1h)}) → NO_TRADE")
+        return {"action": "NO_TRADE", "reason": "insufficient_1h_candles"}
+    price = closes_1h[-1]
+    print(f"[1H] Price={price:.2f}  (bougies disponibles={len(closes_1h)})")
+
+    # ── 5. Fibonacci 1H — zone Discount/Premium ─────────────────────────────
+    fib = fibonacci_zones(candles_1h, FIBO_LOOKBACK)
     print(f"[Fib] SwingH={fib['swing_high']:.2f}  SwingL={fib['swing_low']:.2f}  "
           f"Fib50={fib['fib50']:.2f}")
 
@@ -371,8 +387,8 @@ def run():
     zone_str = "Discount ✅" if direction == "buy" else "Premium ✅"
     print(f"[{now}] Zone Fibonacci : {zone_str}")
 
-    # ── 5. FVG / Imbalance ─────────────────────────────────────────────────
-    fvgs = detect_fvgs(candles_4h, direction, FVG_LOOKBACK)
+    # ── 6. FVG / Imbalance 1H ─────────────────────────────────────────────
+    fvgs = detect_fvgs(candles_1h, direction, FVG_LOOKBACK)
     in_fvg, matched_fvg = price_in_fvg(price, fvgs)
     if not in_fvg:
         print(f"[{now}] Aucun FVG actif pour {direction} au prix {price:.2f} → NO_TRADE")
@@ -441,8 +457,8 @@ def run():
         f"-- Analyse --\n"
         f"Biais 1D : {bias_str} (EMA{period_1d}={ema200_1d:.0f})\n"
         f"Trend 4H : EMA21={ema21_4h:.0f} {'>' if trend_bull else 'v'} EMA55={ema55_4h:.0f}\n"
-        f"Zone Fib : {zone_str} (Fib50={fib['fib50']:.0f})\n"
-        f"FVG      : {matched_fvg['low']:.0f}-{matched_fvg['high']:.0f}\n\n"
+        f"Zone Fib : {zone_str} (Fib50={fib['fib50']:.0f}) — swing 1H\n"
+        f"FVG 1H   : {matched_fvg['low']:.0f}-{matched_fvg['high']:.0f}\n\n"
         f"Claude DayTrading Bot | {now}"
     )
     notify(msg)

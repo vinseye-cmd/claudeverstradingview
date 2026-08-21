@@ -2,8 +2,8 @@ name: "DayTrading XAU/USD"
 
 on:
   schedule:
-    # Toutes les 4 heures (correspond aux bougies 4H de la stratégie)
-    - cron: "0 */4 * * *"
+    # Toutes les heures de 07h à 20h UTC (London + New York, Asian exclue)
+    - cron: "0 7-20 * * *"
   workflow_dispatch:
     inputs:
       dry_run:
