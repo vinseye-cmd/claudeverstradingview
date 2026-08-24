@@ -34,10 +34,12 @@ TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 PAIR_ID       = "XAUUSD"
 LEVERAGE      = 5       # levier RÉEL appliqué par Moonx sur XAU/USD CFD (vérifié empiriquement)
 MARGIN_USDT   = 19.0    # marge par trade (USDT) — wallet forex $20, cible 0.02 lots
-SL_PCT        = 0.4     # stop-loss ~2x ATR_15m (ATR 15m ≈ 0.15-0.20% du prix)
-TP_PCT        = 0.8     # take-profit → ratio 1:2 maintenu
 EMA_FAST         = 8    # EMA rapide 15min pour signal d'entrée
 EMA_SLOW         = 21   # EMA lente 15min pour signal d'entrée
+SWING_LOOKBACK   = 20   # bougies 1H à scanner pour trouver le swing (20h)
+SWING_BUFFER_PCT = 0.10 # buffer au-delà du swing (évite le faux breakout)
+MIN_SL_PCT       = 0.20 # SL minimum (plancher anti-bruit)
+MAX_SL_PCT       = 1.20 # SL maximum (plafond gestion du risque)
 MIN_LOTS         = 0.01 # lot minimum accepté par Moonx pour XAUUSD
 SESSION_START    = 7    # heure UTC début session active (London open)
 SESSION_END      = 20   # heure UTC fin session active (NY close)
@@ -349,13 +351,26 @@ def run():
     signal_str = f"EMA{EMA_FAST}={ema8_15m:.0f} > EMA{EMA_SLOW}={ema21_15m:.0f} + pullback"
     print(f"[15m] Signal valide : {signal_str}")
 
-    # ── 6. Calcul SL / TP (1:2) ────────────────────────────────────────────
+    # ── 6. Calcul SL/TP sur swing 1H (ratio 1:2) ──────────────────────────
+    lows_1h  = [float(c.get("low",  c.get("l",  c.get("close", c.get("c", 0))))) for c in candles_1h]
+    highs_1h = [float(c.get("high", c.get("h",  c.get("close", c.get("c", 0))))) for c in candles_1h]
+
     if direction == "buy":
-        sl = round(price * (1 - SL_PCT / 100), 2)
-        tp = round(price * (1 + TP_PCT / 100), 2)
+        swing_ref   = min(lows_1h[-SWING_LOOKBACK:-1])
+        sl_raw      = swing_ref * (1 - SWING_BUFFER_PCT / 100)
+        sl_dist_pct = (price - sl_raw) / price * 100
+        sl_dist_pct = max(MIN_SL_PCT, min(MAX_SL_PCT, sl_dist_pct))
+        sl = round(price * (1 - sl_dist_pct / 100), 2)
+        tp = round(price + 2 * (price - sl), 2)
     else:
-        sl = round(price * (1 + SL_PCT / 100), 2)
-        tp = round(price * (1 - TP_PCT / 100), 2)
+        swing_ref   = max(highs_1h[-SWING_LOOKBACK:-1])
+        sl_raw      = swing_ref * (1 + SWING_BUFFER_PCT / 100)
+        sl_dist_pct = (sl_raw - price) / price * 100
+        sl_dist_pct = max(MIN_SL_PCT, min(MAX_SL_PCT, sl_dist_pct))
+        sl = round(price * (1 + sl_dist_pct / 100), 2)
+        tp = round(price - 2 * (sl - price), 2)
+
+    print(f"[SL/TP] Swing ref={swing_ref:.2f} | dist={sl_dist_pct:.2f}% | SL={sl} | TP={tp}")
 
     lots = calc_lots(price)
     print(f"[Trade] {direction.upper()} {lots} lots | Entry={price:.2f} | SL={sl} | TP={tp}")
@@ -396,8 +411,8 @@ def run():
         f"{emoji} TRADE EXECUTE — XAU/USD Bot 2\n\n"
         f"Direction  : {direction_fr}\n"
         f"Entree     : {price:.2f} USD\n"
-        f"Stop-Loss  : {sl:.2f} ({SL_PCT}%)\n"
-        f"Take-Profit: {tp:.2f} ({TP_PCT}%)\n"
+        f"Stop-Loss  : {sl:.2f} ({sl_dist_pct:.2f}% — swing 1H)\n"
+        f"Take-Profit: {tp:.2f} (ratio 1:2)\n"
         f"Lots       : {lots} | Marge : {MARGIN_USDT} USDT | Levier : {LEVERAGE}x\n"
         f"Position ID: {pos_id}\n\n"
         f"-- Analyse --\n"
