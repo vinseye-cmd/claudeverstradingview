@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 """
 daytrading_cycle.py — Bot 2 : DayTrading XAU/USD via Moonx CFD
-Stratégie SMC/ICT multi-timeframe :
-  - Biais 1D  : EMA20 (au-dessus = achat seulement, en-dessous = vente seulement)
-  - Trend 4H  : EMA21 > EMA55 (achat) ou EMA21 < EMA55 (vente)
-  - Entrée 1H : FVG/Imbalance en zone Discount (Fibonacci) pour achat
-                ou en zone Premium (Fibonacci) pour vente
-  - Sessions  : London (07h-12h UTC) + New York (13h-20h UTC) — Asian exclue
-  - SL : ~2x ATR_1H (~0.8%) | TP : 1.6% (ratio 1:2)
-  - Marge : 9 USDT x 5x levier reel Moonx = 45 USDT exposition (~0.01 lots)
-Lancé par GitHub Actions toutes les heures de 07h à 20h UTC.
+Stratégie multi-timeframe 2 niveaux :
+  - Biais 1H  : EMA21 > EMA55 = achat | EMA21 < EMA55 = vente
+  - Entrée 15m: EMA8 > EMA21 + pullback (achat) ou EMA8 < EMA21 + pullback (vente)
+  - Sessions  : London (07h UTC) → NY close (20h UTC) — Asian + week-end exclus
+  - SL 0.4% / TP 0.8% (ratio 1:2)
+Lancé par GitHub Actions toutes les heures de 07h à 20h UTC, lundi-vendredi.
 """
 
 import os
@@ -39,10 +36,8 @@ LEVERAGE      = 5       # levier RÉEL appliqué par Moonx sur XAU/USD CFD (vér
 MARGIN_USDT   = 19.0    # marge par trade (USDT) — wallet forex $20, cible 0.02 lots
 SL_PCT        = 0.4     # stop-loss ~2x ATR_15m (ATR 15m ≈ 0.15-0.20% du prix)
 TP_PCT        = 0.8     # take-profit → ratio 1:2 maintenu
-EMA_TREND_PERIOD = 20   # période EMA biais 1D
 EMA_FAST         = 8    # EMA rapide 15min pour signal d'entrée
 EMA_SLOW         = 21   # EMA lente 15min pour signal d'entrée
-MIN_1D_CANDLES   = 15   # minimum de bougies 1D requises
 MIN_LOTS         = 0.01 # lot minimum accepté par Moonx pour XAUUSD
 SESSION_START    = 7    # heure UTC début session active (London open)
 SESSION_END      = 20   # heure UTC fin session active (NY close)
@@ -300,56 +295,28 @@ def run():
         notify(f"⏸ XAU/USD Bot 2 | {now}\nPosition deja ouverte — attente cloture.")
         return {"action": "NO_TRADE", "reason": "position_already_open"}
 
-    # ── 1. Biais 1D (EMA 200) ──────────────────────────────────────────────
-    candles_1d = get_candles(PAIR_ID, "1d", 50)
-    closes_1d  = [float(c.get("close", c.get("c", 0))) for c in candles_1d]
-    if len(closes_1d) < MIN_1D_CANDLES:
-        msg = (f"⚠️ XAU/USD Bot 2 — Donnees insuffisantes | {now}\n\n"
-               f"Seulement {len(closes_1d)} bougies 1D disponibles (minimum {MIN_1D_CANDLES}).\n"
-               f"Moonx limite l'historique XAU/USD forex.")
-        notify(msg)
-        print(f"[{now}] Bougies 1D insuffisantes ({len(closes_1d)}) → NO_TRADE")
-        return {"action": "NO_TRADE", "reason": "insufficient_1d_candles"}
+    # ── 2. Biais directionnel 1H (EMA21 / EMA55) ──────────────────────────
+    candles_1h = get_candles(PAIR_ID, "1h", 100)
+    closes_1h  = [float(c.get("close", c.get("c", 0))) for c in candles_1h]
+    if len(closes_1h) < 60:
+        print(f"[{now}] Bougies 1H insuffisantes → NO_TRADE")
+        return {"action": "NO_TRADE", "reason": "insufficient_1h_candles"}
 
-    period_1d = min(EMA_TREND_PERIOD, len(closes_1d) - 2)
-    ema200_1d = calc_ema(closes_1d, period_1d)
-    print(f"[1D] Bougies disponibles={len(closes_1d)}, période EMA utilisée={period_1d}")
-    close_1d  = closes_1d[-1]
-    bias_bull = close_1d > ema200_1d
-    bias_bear = close_1d < ema200_1d
-    bias_str  = "HAUSSIER 🟢" if bias_bull else "BAISSIER 🔴"
-    print(f"[1D] Close={close_1d:.2f}  EMA{period_1d}={ema200_1d:.2f}  Biais={bias_str}")
+    ema21_1h  = calc_ema(closes_1h, 21)
+    ema55_1h  = calc_ema(closes_1h, 55)
+    trend_bull = ema21_1h > ema55_1h
+    trend_bear = ema21_1h < ema55_1h
+    print(f"[1H] EMA21={ema21_1h:.2f}  EMA55={ema55_1h:.2f}  trend={'BULL' if trend_bull else 'BEAR'}")
 
-    # ── 2. Confirmation 4H (EMA 21 / 55) ──────────────────────────────────
-    candles_4h = get_candles(PAIR_ID, "4h", 110)
-    closes_4h  = [float(c.get("close", c.get("c", 0))) for c in candles_4h]
-    if len(closes_4h) < 60:
-        print(f"[{now}] Bougies 4H insuffisantes → NO_TRADE")
-        return {"action": "NO_TRADE", "reason": "insufficient_4h_candles"}
-
-    ema21_4h  = calc_ema(closes_4h, 21)
-    ema55_4h  = calc_ema(closes_4h, 55)
-    trend_bull = ema21_4h > ema55_4h
-    trend_bear = ema21_4h < ema55_4h
-    print(f"[4H] EMA21={ema21_4h:.2f}  EMA55={ema55_4h:.2f}  trend={'BULL' if trend_bull else 'BEAR'}")
-
-    # ── 3. Alignement biais 1D + tendance 4H ──────────────────────────────
-    if bias_bull and trend_bull:
+    if trend_bull:
         direction = "buy"
-    elif bias_bear and trend_bear:
+    elif trend_bear:
         direction = "sell"
     else:
-        print(f"[{now}] Biais 1D/4H non alignés → NO_TRADE")
-        notify(
-            f"⏳ XAU/USD Bot 2 — NO TRADE | {now}\n\n"
-            f"Biais 1D/4H non alignes\n"
-            f"• 1D : {bias_str} (Close={close_1d:.0f} / EMA{period_1d}={ema200_1d:.0f})\n"
-            f"• 4H : EMA21={ema21_4h:.0f} {'>' if trend_bull else 'v'} EMA55={ema55_4h:.0f}\n"
-            f"Les deux timeframes doivent pointer dans le meme sens."
-        )
-        return {"action": "NO_TRADE", "reason": "bias_misalignment_1d_4h"}
+        print(f"[{now}] 1H EMA21 == EMA55 (transition) → NO_TRADE silencieux")
+        return {"action": "NO_TRADE", "reason": "1h_ema_flat"}
 
-    print(f"[{now}] Direction validée : {direction.upper()}")
+    print(f"[{now}] Direction 1H : {direction.upper()}")
 
     # ── 4. Signal d'entrée 15min — EMA8 / EMA21 cross + pullback ──────────
     candles_15m = get_candles(PAIR_ID, "15m", 100)
@@ -434,8 +401,7 @@ def run():
         f"Lots       : {lots} | Marge : {MARGIN_USDT} USDT | Levier : {LEVERAGE}x\n"
         f"Position ID: {pos_id}\n\n"
         f"-- Analyse --\n"
-        f"Biais 1D : {bias_str} (EMA{period_1d}={ema200_1d:.0f})\n"
-        f"Trend 4H : EMA21={ema21_4h:.0f} {'>' if trend_bull else 'v'} EMA55={ema55_4h:.0f}\n"
+        f"Biais 1H : EMA21={ema21_1h:.0f} {'>' if trend_bull else 'v'} EMA55={ema55_1h:.0f}\n"
         f"Signal   : {signal_str}\n\n"
         f"Claude DayTrading Bot | {now}"
     )
