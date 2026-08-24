@@ -320,7 +320,7 @@ def run():
 
     print(f"[{now}] Direction 1H : {direction.upper()}")
 
-    # ── 4. Signal d'entrée 15min — EMA8 / EMA21 cross + pullback ──────────
+    # ── 4. Signal d'entrée 15min — EMA8 / EMA21 cross (trend-following) ────
     candles_15m = get_candles(PAIR_ID, "15m", 100)
     closes_15m  = [float(c.get("close", c.get("c", 0))) for c in candles_15m]
     if len(closes_15m) < 30:
@@ -331,24 +331,20 @@ def run():
     ema21_15m = calc_ema(closes_15m, EMA_SLOW)
     print(f"[15m] Price={price:.2f}  EMA{EMA_FAST}={ema8_15m:.2f}  EMA{EMA_SLOW}={ema21_15m:.2f}")
 
-    # Achat  : EMA8 > EMA21 (momentum haussier) ET prix sous ou proche de l'EMA8 (pullback)
-    # Vente  : EMA8 < EMA21 (momentum baissier) ET prix dessus ou proche de l'EMA8
+    # Entrée pure trend-following : EMA8 dans la direction du biais 1H
+    # Pas de condition pullback — on suit la tendance sans attendre un retour
     if direction == "buy":
-        ema_cross_ok = ema8_15m > ema21_15m
-        pullback_ok  = price <= ema8_15m * 1.002   # prix dans ≤0.2% au-dessus de l'EMA8
-        entry_ok     = ema_cross_ok and pullback_ok
+        entry_ok = ema8_15m > ema21_15m
     else:
-        ema_cross_ok = ema8_15m < ema21_15m
-        pullback_ok  = price >= ema8_15m * 0.998
-        entry_ok     = ema_cross_ok and pullback_ok
+        entry_ok = ema8_15m < ema21_15m
 
     if not entry_ok:
         cross_sym = ">" if ema8_15m > ema21_15m else "<"
-        print(f"[{now}] EMA{EMA_FAST}({ema8_15m:.0f}) {cross_sym} EMA{EMA_SLOW}({ema21_15m:.0f}) | "
-              f"pullback_ok={pullback_ok} → NO_TRADE silencieux")
-        return {"action": "NO_TRADE", "reason": "ema_15m_conditions_not_met"}
+        print(f"[{now}] EMA{EMA_FAST}({ema8_15m:.0f}) {cross_sym} EMA{EMA_SLOW}({ema21_15m:.0f}) "
+              f"— pas dans la direction {direction.upper()} → NO_TRADE silencieux")
+        return {"action": "NO_TRADE", "reason": "ema_15m_not_aligned"}
 
-    signal_str = f"EMA{EMA_FAST}={ema8_15m:.0f} > EMA{EMA_SLOW}={ema21_15m:.0f} + pullback"
+    signal_str = f"EMA{EMA_FAST}={ema8_15m:.0f} {'>' if direction=='buy' else '<'} EMA{EMA_SLOW}={ema21_15m:.0f}"
     print(f"[15m] Signal valide : {signal_str}")
 
     # ── 6. Calcul SL/TP sur swing 1H (ratio 1:2) ──────────────────────────
