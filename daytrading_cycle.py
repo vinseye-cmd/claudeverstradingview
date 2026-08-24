@@ -36,12 +36,12 @@ TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
 PAIR_ID       = "XAUUSD"
 LEVERAGE      = 5       # levier RÉEL appliqué par Moonx sur XAU/USD CFD (vérifié empiriquement)
-MARGIN_USDT   = 9.0     # marge par trade (USDT) — laisse $1 de buffer sur le wallet de $10
-SL_PCT        = 0.8     # stop-loss ~2x ATR_1H (ATR 1H ≈ 0.4% du prix)
-TP_PCT        = 1.6     # take-profit → ratio 1:2 maintenu
+MARGIN_USDT   = 19.0    # marge par trade (USDT) — wallet forex $20, cible 0.02 lots
+SL_PCT        = 0.4     # stop-loss ~2x ATR_15m (ATR 15m ≈ 0.15-0.20% du prix)
+TP_PCT        = 0.8     # take-profit → ratio 1:2 maintenu
 EMA_TREND_PERIOD = 20   # période EMA biais 1D
-FIBO_LOOKBACK    = 30   # bougies 1H pour swing Fibonacci (~1.25 jours)
-FVG_LOOKBACK     = 20   # bougies 1H pour chercher les FVG
+EMA_FAST         = 8    # EMA rapide 15min pour signal d'entrée
+EMA_SLOW         = 21   # EMA lente 15min pour signal d'entrée
 MIN_1D_CANDLES   = 15   # minimum de bougies 1D requises
 MIN_LOTS         = 0.01 # lot minimum accepté par Moonx pour XAUUSD
 SESSION_START    = 7    # heure UTC début session active (London open)
@@ -280,10 +280,15 @@ def run():
 
     state = load_state()
 
-    # ── 0. Filtre session — London (07h-12h UTC) + NY (13h-20h UTC) ───────
-    hour_utc = datetime.now(timezone.utc).hour
+    # ── 0. Filtre session — London/NY uniquement, pas de week-end ─────────
+    now_dt   = datetime.now(timezone.utc)
+    weekday  = now_dt.weekday()   # 0=Lun … 4=Ven, 5=Sam, 6=Dim
+    hour_utc = now_dt.hour
+    if weekday >= 5:
+        print(f"[{now}] Week-end (jour={weekday}) — marché forex fermé → NO_TRADE silencieux")
+        return {"action": "NO_TRADE", "reason": "weekend_closed"}
     if not (SESSION_START <= hour_utc < SESSION_END):
-        print(f"[{now}] Hors session active ({hour_utc}h UTC, fenetre {SESSION_START}h-{SESSION_END}h) → NO_TRADE silencieux")
+        print(f"[{now}] Hors session active ({hour_utc}h UTC) → NO_TRADE silencieux")
         return {"action": "NO_TRADE", "reason": "outside_session"}
 
     # ── 1. Vérifier position déjà ouverte ──────────────────────────────────
@@ -346,33 +351,36 @@ def run():
 
     print(f"[{now}] Direction validée : {direction.upper()}")
 
-    # ── 4. Données 1H — prix d'entrée + FVG ───────────────────────────────
-    candles_1h = get_candles(PAIR_ID, "1h", 100)
-    closes_1h  = [float(c.get("close", c.get("c", 0))) for c in candles_1h]
-    if len(closes_1h) < 30:
-        print(f"[{now}] Bougies 1H insuffisantes ({len(closes_1h)}) → NO_TRADE")
-        return {"action": "NO_TRADE", "reason": "insufficient_1h_candles"}
-    price = closes_1h[-1]
-    print(f"[1H] Price={price:.2f}  (bougies disponibles={len(closes_1h)})")
+    # ── 4. Signal d'entrée 15min — EMA8 / EMA21 cross + pullback ──────────
+    candles_15m = get_candles(PAIR_ID, "15m", 100)
+    closes_15m  = [float(c.get("close", c.get("c", 0))) for c in candles_15m]
+    if len(closes_15m) < 30:
+        print(f"[{now}] Bougies 15m insuffisantes ({len(closes_15m)}) → NO_TRADE")
+        return {"action": "NO_TRADE", "reason": "insufficient_15m_candles"}
+    price     = closes_15m[-1]
+    ema8_15m  = calc_ema(closes_15m, EMA_FAST)
+    ema21_15m = calc_ema(closes_15m, EMA_SLOW)
+    print(f"[15m] Price={price:.2f}  EMA{EMA_FAST}={ema8_15m:.2f}  EMA{EMA_SLOW}={ema21_15m:.2f}")
 
-    # ── 5. FVG / Imbalance 1H — zone d'entrée ─────────────────────────────
-    # Le FVG est lui-même la zone de déséquilibre (Discount/Premium implicite).
-    # Le filtre Fibonacci a été retiré car en trend fort (ADX>30) le prix ne
-    # revient jamais à 50% du swing avant de repartir.
-    fvgs = detect_fvgs(candles_1h, direction, FVG_LOOKBACK)
-    in_fvg, matched_fvg = price_in_fvg(price, fvgs)
-    if not in_fvg:
-        print(f"[{now}] Aucun FVG actif pour {direction} au prix {price:.2f} → NO_TRADE")
-        notify(
-            f"⏳ XAU/USD Bot 2 — NO TRADE | {now}\n\n"
-            f"Aucun FVG/Imbalance 1H actif\n"
-            f"• Biais : {bias_str}\n"
-            f"• Prix actuel : {price:.2f}\n"
-            f"Attente d'un retour du prix dans un FVG {direction.upper()}."
-        )
-        return {"action": "NO_TRADE", "reason": "no_active_fvg"}
+    # Achat  : EMA8 > EMA21 (momentum haussier) ET prix sous ou proche de l'EMA8 (pullback)
+    # Vente  : EMA8 < EMA21 (momentum baissier) ET prix dessus ou proche de l'EMA8
+    if direction == "buy":
+        ema_cross_ok = ema8_15m > ema21_15m
+        pullback_ok  = price <= ema8_15m * 1.002   # prix dans ≤0.2% au-dessus de l'EMA8
+        entry_ok     = ema_cross_ok and pullback_ok
+    else:
+        ema_cross_ok = ema8_15m < ema21_15m
+        pullback_ok  = price >= ema8_15m * 0.998
+        entry_ok     = ema_cross_ok and pullback_ok
 
-    print(f"[FVG] Match : {matched_fvg['low']:.2f} – {matched_fvg['high']:.2f} ({matched_fvg['type']})")
+    if not entry_ok:
+        cross_sym = ">" if ema8_15m > ema21_15m else "<"
+        print(f"[{now}] EMA{EMA_FAST}({ema8_15m:.0f}) {cross_sym} EMA{EMA_SLOW}({ema21_15m:.0f}) | "
+              f"pullback_ok={pullback_ok} → NO_TRADE silencieux")
+        return {"action": "NO_TRADE", "reason": "ema_15m_conditions_not_met"}
+
+    signal_str = f"EMA{EMA_FAST}={ema8_15m:.0f} > EMA{EMA_SLOW}={ema21_15m:.0f} + pullback"
+    print(f"[15m] Signal valide : {signal_str}")
 
     # ── 6. Calcul SL / TP (1:2) ────────────────────────────────────────────
     if direction == "buy":
@@ -428,7 +436,7 @@ def run():
         f"-- Analyse --\n"
         f"Biais 1D : {bias_str} (EMA{period_1d}={ema200_1d:.0f})\n"
         f"Trend 4H : EMA21={ema21_4h:.0f} {'>' if trend_bull else 'v'} EMA55={ema55_4h:.0f}\n"
-        f"FVG 1H   : {matched_fvg['low']:.0f}-{matched_fvg['high']:.0f} ({matched_fvg['type']})\n\n"
+        f"Signal   : {signal_str}\n\n"
         f"Claude DayTrading Bot | {now}"
     )
     notify(msg)
