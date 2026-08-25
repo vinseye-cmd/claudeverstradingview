@@ -36,7 +36,7 @@ TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 # ─── Paramètres de trading ─────────────────────────────────────────────────────
 PAIR_ID     = "XAUUSD"
 LEVERAGE    = 5       # levier RÉEL Moonx XAU/USD (vérifié empiriquement)
-MARGIN_USDT = 19.0    # marge cible par trade (wallet forex ~$20)
+MARGIN_USDT = 9.0     # marge cible → 9×5/4650 ≈ 0.01 lots → marge réelle ~$9.30 (wallet $15)
 MIN_LOTS    = 0.01    # lot minimum Moonx XAUUSD
 
 # ─── Stratégie 0.5 ─────────────────────────────────────────────────────────────
@@ -320,8 +320,8 @@ def run():
     # ── 3. Vérifier solde forex ────────────────────────────────────────────────
     free_margin = get_forex_free_margin()
     print(f"[Wallet] Free margin forex = {free_margin:.2f} USDT")
-    if free_margin < MARGIN_USDT * 0.5:
-        print(f"[{now}] Solde forex insuffisant ({free_margin:.2f} USDT) → NO_TRADE")
+    if free_margin < MARGIN_USDT:
+        print(f"[{now}] Solde forex insuffisant ({free_margin:.2f} USDT < {MARGIN_USDT}) → NO_TRADE")
         if free_margin < 1.0:
             notify(
                 f"Alerte XAU/USD Bot 2 — Wallet forex vide | {now}\n\n"
