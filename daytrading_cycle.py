@@ -126,6 +126,18 @@ def list_open_positions():
     return result.get("positions", result.get("data", []))
 
 
+def get_forex_free_margin():
+    """Retourne le free margin du wallet forex (0 si wallet vide/erreur)."""
+    try:
+        result = _moonx_call("get_account_overview", {})
+        if isinstance(result, dict):
+            fw = result.get("forexWallet", {})
+            return float(fw.get("freeMargin", fw.get("free_margin", 0)) or 0)
+    except Exception:
+        pass
+    return 0.0
+
+
 def open_position(side, lots, sl, tp):
     result = _moonx_call("open_forex_position", {
         "pairId":     PAIR_ID,
@@ -145,9 +157,12 @@ def open_position(side, lots, sl, tp):
             raise RuntimeError(f"Moonx a rejete l'ordre: {raw_text[:500]}")
 
         # La réponse doit contenir un identifiant de position
+        # Moonx renvoie { success: True, position: { _id: "...", ... } }
+        pos_block = result.get("position") or {}
         pos_id = (result.get("positionId") or result.get("id")
                   or result.get("position_id") or result.get("orderId")
-                  or result.get("tradeId"))
+                  or result.get("tradeId")
+                  or pos_block.get("_id") or pos_block.get("id"))
         if not pos_id:
             raise RuntimeError(
                 f"Position non creee — reponse sans ID de position: {result}"
@@ -290,12 +305,25 @@ def run():
 
     # ── 1. Vérifier position déjà ouverte ──────────────────────────────────
     open_pos = list_open_positions()
+    pair_clean = PAIR_ID.upper().replace("/", "")   # "XAUUSD" — Moonx renvoie parfois "XAU/USD"
     xau_open = [p for p in open_pos
-                if PAIR_ID.upper() in str(p.get("pairId", p.get("symbol", ""))).upper()]
+                if pair_clean in str(p.get("pairId", p.get("symbol", ""))).upper().replace("/", "")]
     if xau_open:
-        print(f"[{now}] Position {PAIR_ID} déjà ouverte ({len(xau_open)}) → NO_TRADE")
-        notify(f"⏸ XAU/USD Bot 2 | {now}\nPosition deja ouverte — attente cloture.")
+        print(f"[{now}] Position {PAIR_ID} déjà ouverte ({len(xau_open)}) → NO_TRADE silencieux")
         return {"action": "NO_TRADE", "reason": "position_already_open"}
+
+    # ── 1b. Vérifier le solde forex avant d'aller plus loin ────────────────
+    free_margin = get_forex_free_margin()
+    print(f"[Wallet] Free margin forex = {free_margin:.2f} USDT")
+    if free_margin < MARGIN_USDT * 0.5:   # moins de 50% de la marge nécessaire → stop
+        print(f"[{now}] Solde forex insuffisant ({free_margin:.2f} USDT) → NO_TRADE silencieux")
+        if free_margin < 1.0:             # wallet quasiment vide → une seule notif par heure
+            notify(
+                f"⚠ XAU/USD Bot 2 — Wallet forex vide | {now}\n\n"
+                f"Free margin : {free_margin:.2f} USDT\n"
+                f"Transferer des fonds depuis Spot ou Futures vers le wallet Forex."
+            )
+        return {"action": "NO_TRADE", "reason": "insufficient_forex_balance"}
 
     # ── 2. Biais directionnel 1H (EMA21 / EMA55) ──────────────────────────
     candles_1h = get_candles(PAIR_ID, "1h", 100)
@@ -387,10 +415,13 @@ def run():
         )
         return {"action": "ERROR", "reason": "order_rejected", "detail": err_detail}
 
+    pos_block = result.get("position") or {}
     pos_id = (result.get("positionId")
               or result.get("id")
               or result.get("position_id")
               or result.get("tradeId")
+              or pos_block.get("_id")
+              or pos_block.get("id")
               or "unknown")
     print(f"[Moonx] Position creee ID={pos_id}")
 
