@@ -308,6 +308,10 @@ def run():
 
     print(f"[{now}] Session {session_label} — phase TRADING")
 
+    # ── 1.5. Heartbeat au premier run de chaque session ────────────────────────
+    session_key   = f"{now_dt.strftime('%Y-%m-%d')}-{session_label}"
+    send_heartbeat = state.get("last_heartbeat_session") != session_key
+
     # ── 2. Vérifier position déjà ouverte ─────────────────────────────────────
     open_pos   = list_open_positions()
     pair_clean = PAIR_ID.upper().replace("/", "")
@@ -327,6 +331,16 @@ def run():
                 f"Alerte XAU/USD Bot 2 — Wallet forex vide | {now}\n\n"
                 f"Free margin : {free_margin:.2f} USDT\n"
                 f"Transferer des fonds depuis Spot ou Futures vers le wallet Forex."
+            )
+        elif send_heartbeat:
+            state["last_heartbeat_session"] = session_key
+            save_state(state)
+            notify(
+                f"Bot XAU/USD | Session {session_label} — Solde insuffisant\n\n"
+                f"Free margin : {free_margin:.2f} USDT\n"
+                f"Minimum requis : {MARGIN_USDT:.1f} USDT (0.01 lots)\n"
+                f"Impossible de trader. Transferer des fonds.\n"
+                f"{now}"
             )
         return {"action": "NO_TRADE", "reason": "insufficient_forex_balance"}
 
@@ -375,6 +389,23 @@ def run():
     dist_to_05_pct = dist_to_05 / price * 100
 
     print(f"[Fib 0.5] Distance prix/0.5 = {dist_to_05:.2f} ({dist_to_05_pct:.3f}%) | seuil={FIB_ZONE_PCT*100:.1f}%")
+
+    # ── Heartbeat session (envoyé une fois par session au premier run trading) ──
+    if send_heartbeat:
+        state["last_heartbeat_session"] = session_key
+        save_state(state)
+        notify(
+            f"Bot XAU/USD actif | Session {session_label}\n\n"
+            f"Prix actuel : {price:.2f} USD\n"
+            f"Fib 0 (High): {fib_0:.2f}\n"
+            f"Fib 0.5     : {fib_05:.2f} (cible entree)\n"
+            f"Fib 1 (Low) : {fib_1:.2f}\n"
+            f"Distance 0.5: {dist_to_05_pct:.2f}% | seuil {FIB_ZONE_PCT*100:.1f}%\n"
+            f"Direction   : {direction_fr}\n"
+            f"Wallet forex: {free_margin:.2f} USDT libre\n\n"
+            f"En attente signal (prix au 0.5 + englobante)...\n"
+            f"{now}"
+        )
 
     if dist_to_05_pct > FIB_ZONE_PCT * 100:
         print(f"[{now}] Prix ({price:.2f}) pas au niveau 0.5 ({fib_05:.2f}) → NO_TRADE silencieux")
