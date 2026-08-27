@@ -2,8 +2,8 @@ name: "DayTrading XAU/USD"
 
 on:
   schedule:
-    # Toutes les 5 minutes de 09h à 16h UTC, lundi à vendredi (London + NY sessions)
-    - cron: "*/5 9-16 * * 1-5"
+    # Toutes les 5 minutes, 24h/24, lundi a vendredi (or ferme le week-end)
+    - cron: "*/5 * * * 1-5"
   workflow_dispatch:
     inputs:
       dry_run:

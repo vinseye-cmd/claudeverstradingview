@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """
 daytrading_cycle.py — Bot 2 : DayTrading XAU/USD via Moonx CFD
-Stratégie 0.5 (Fibonacci 50%) :
+Strategie 0.5 (Fibonacci 50%) — mode 24h/5j :
   - Timeframe unique : 5 minutes
-  - Sessions        : London (09h00 UTC) et New York (15h00 UTC)
-  - Observation     : 15 premières minutes de chaque session → pas de position
-  - Direction       : flux d'ouverture — grosses bougies haussières/baissières
-  - Entrée          : retracement au niveau Fibonacci 0.5 + bougie englobante
-  - SL              : niveau Fibonacci 1 (extrême du swing) + buffer
-  - TP              : niveau Fibonacci 0 (opposé du swing)
-Lancé toutes les 5 minutes de 09h à 16h UTC, lundi-vendredi.
+  - Actif            : lundi-vendredi, toutes les 5 minutes sans restriction horaire
+  - Entree           : prix au niveau Fibonacci 0.5 du swing (± 0.8%)
+  - Direction        : swing low recent → BUY | swing high recent → SELL
+  - SL               : niveau Fibonacci 1 (extreme du swing) + buffer 0.1%
+  - TP               : niveau Fibonacci 0 (oppose du swing)
+  - Une seule position a la fois
 """
 
 import os
@@ -17,7 +16,7 @@ import json
 import requests
 import traceback
 import urllib3
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -33,23 +32,17 @@ MOONX_HEADERS = {
 TELEGRAM_TOKEN   = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-# ─── Paramètres de trading ─────────────────────────────────────────────────────
+# ─── Parametres de trading ─────────────────────────────────────────────────────
 PAIR_ID     = "XAUUSD"
-LEVERAGE    = 5       # levier RÉEL Moonx XAU/USD (vérifié empiriquement)
-MARGIN_USDT = 9.0     # marge cible → 9×5/4650 ≈ 0.01 lots → marge réelle ~$9.30 (wallet $15)
+LEVERAGE    = 5       # levier REEL Moonx XAU/USD (verifie empiriquement)
+MARGIN_USDT = 9.0     # marge cible → 9x5/4600 ≈ 0.01 lots → marge reelle ~$9.00
 MIN_LOTS    = 0.01    # lot minimum Moonx XAUUSD
 
-# ─── Stratégie 0.5 ─────────────────────────────────────────────────────────────
+# ─── Strategie 0.5 ─────────────────────────────────────────────────────────────
 SWING_CANDLES   = 40    # bougies 5min pour trouver le swing H/L (~3h20)
-FIB_ZONE_PCT    = 0.008 # 0.8% — tolérance autour du niveau 0.5 (élargi pour plus de signaux)
-FIB_SL_BUFFER   = 0.001 # 0.1% buffer au-delà du swing pour le SL (évite le faux stop)
-MIN_SWING_RANGE = 0.002 # le swing doit être ≥ 0.2% du prix pour être valide
-
-# Sessions de trading (UTC) : observation 15min puis trade
-SESSIONS = [
-    {"label": "London",   "open": (9, 0),  "trade": (9, 15),  "close": (10, 30)},
-    {"label": "New York", "open": (15, 0), "trade": (15, 15), "close": (16, 30)},
-]
+FIB_ZONE_PCT    = 0.008 # 0.8% — zone d'entree autour du niveau 0.5
+FIB_SL_BUFFER   = 0.001 # 0.1% buffer au-dela du swing pour le SL
+MIN_SWING_RANGE = 0.002 # le swing doit etre >= 0.2% du prix pour etre valide
 
 STATE_FILE = "state_daytrading.json"
 
@@ -105,7 +98,7 @@ def get_candles(symbol, interval, limit=200):
         "limit": limit,
     })
     if isinstance(raw, dict):
-        print(f"[DEBUG:get_candles] dict reçu, clés : {list(raw.keys())}")
+        print(f"[DEBUG:get_candles] dict recu, cles : {list(raw.keys())}")
         for key in ("candles", "data", "bars", "ohlcv", "result"):
             if key in raw and isinstance(raw[key], list):
                 return raw[key]
@@ -123,7 +116,6 @@ def list_open_positions():
 
 
 def get_forex_free_margin():
-    """Retourne le free margin du wallet forex (0 si wallet vide/erreur)."""
     try:
         result = _moonx_call("get_account_overview", {})
         if isinstance(result, dict):
@@ -151,7 +143,6 @@ def open_position(side, lots, sl, tp):
                              "not enough", "minimum", "exceed")):
             raise RuntimeError(f"Moonx a rejete l'ordre: {raw_text[:500]}")
 
-        # Moonx renvoie { success: True, position: { _id: "...", ... } }
         pos_block = result.get("position") or {}
         pos_id = (result.get("positionId") or result.get("id")
                   or result.get("position_id") or result.get("orderId")
@@ -172,9 +163,9 @@ def notify(text):
     print(f"[telegram] envoi → chat_id={TELEGRAM_CHAT_ID} token_prefix={TELEGRAM_TOKEN[:10]}...")
     try:
         r = requests.post(url, json=payload, timeout=10)
-        print(f"[telegram] réponse HTTP {r.status_code}: {r.text[:300]}")
+        print(f"[telegram] reponse HTTP {r.status_code}: {r.text[:300]}")
     except Exception as e:
-        print(f"[telegram] erreur réseau: {e}")
+        print(f"[telegram] erreur reseau: {e}")
 
 
 # ─── Helpers OHLC ─────────────────────────────────────────────────────────────
@@ -187,57 +178,14 @@ def _ohlc(candle):
     }
 
 
-# ─── Stratégie 0.5 — détection swing & englobante ────────────────────────────
+# ─── Swing detection ──────────────────────────────────────────────────────────
 def find_swing(candles, lookback):
-    """
-    Trouve le Swing High et Swing Low sur les `lookback` dernières bougies 5min.
-    Retourne (swing_high, swing_low, high_idx, low_idx) — indices dans la fenêtre.
-    """
     window = [_ohlc(c) for c in candles[-lookback:]]
     swing_high = max(c["high"] for c in window)
     swing_low  = min(c["low"]  for c in window)
     high_idx   = max(range(len(window)), key=lambda i: window[i]["high"])
     low_idx    = min(range(len(window)), key=lambda i: window[i]["low"])
     return swing_high, swing_low, high_idx, low_idx
-
-
-def is_directional_candle(candles, direction):
-    """
-    Confirmation directionnelle simple au niveau 0.5 :
-    - BUY  : au moins 2 des 3 dernières bougies sont vertes (close > open)
-    - SELL : au moins 2 des 3 dernières bougies sont rouges (close < open)
-    Plus souple que l'englobante stricte, garde la logique de confirmation.
-    """
-    if len(candles) < 3:
-        return False
-    recent = [_ohlc(c) for c in candles[-3:]]
-    if direction == "buy":
-        return sum(1 for c in recent if c["close"] > c["open"]) >= 2
-    else:
-        return sum(1 for c in recent if c["close"] < c["open"]) >= 2
-
-
-def get_active_session(now_dt):
-    """
-    Retourne (session_label, phase, open_dt) pour la session active.
-    phase = 'observation' (15 premières min) ou 'trading'
-    Retourne (None, None, None) si hors session.
-    """
-    for s in SESSIONS:
-        open_h,  open_m  = s["open"]
-        trade_h, trade_m = s["trade"]
-        close_h, close_m = s["close"]
-
-        open_dt  = now_dt.replace(hour=open_h,  minute=open_m,  second=0, microsecond=0)
-        trade_dt = now_dt.replace(hour=trade_h, minute=trade_m, second=0, microsecond=0)
-        close_dt = now_dt.replace(hour=close_h, minute=close_m, second=0, microsecond=0)
-
-        if open_dt <= now_dt < trade_dt:
-            return s["label"], "observation", open_dt
-        if trade_dt <= now_dt <= close_dt:
-            return s["label"], "trading", open_dt
-
-    return None, None, None
 
 
 # ─── Calcul des lots ──────────────────────────────────────────────────────────
@@ -249,7 +197,7 @@ def calc_lots(entry_price):
     return lots
 
 
-# ─── État persistant ──────────────────────────────────────────────────────────
+# ─── Etat persistant ──────────────────────────────────────────────────────────
 def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE) as f:
@@ -262,48 +210,35 @@ def save_state(state):
         json.dump(state, f, indent=2)
 
 
-# ─── Cycle principal — Stratégie 0.5 ──────────────────────────────────────────
+# ─── Cycle principal — Strategie 0.5 24h/5j ───────────────────────────────────
 def run():
     now_dt = datetime.now(timezone.utc)
     now    = now_dt.strftime("%Y-%m-%d %H:%M UTC")
     print(f"\n{'='*60}")
-    print(f"[{now}] Cycle Stratégie 0.5 — XAU/USD")
+    print(f"[{now}] Cycle Strategie 0.5 — XAU/USD 24h/5j")
     print(f"{'='*60}")
 
     state = load_state()
 
     # ── 0. Filtre week-end ─────────────────────────────────────────────────────
     if now_dt.weekday() >= 5:
-        print(f"[{now}] Week-end — marché fermé → NO_TRADE")
+        print(f"[{now}] Week-end — marche ferme → NO_TRADE")
         return {"action": "NO_TRADE", "reason": "weekend_closed"}
 
-    # ── 1. Vérifier la session active ─────────────────────────────────────────
-    session_label, phase, session_open_dt = get_active_session(now_dt)
-    if not session_label:
-        print(f"[{now}] Hors session London/NY → NO_TRADE silencieux")
-        return {"action": "NO_TRADE", "reason": "outside_session"}
+    # ── 1. Heartbeat quotidien (une fois par jour a la premiere execution) ──────
+    today_key = now_dt.strftime("%Y-%m-%d")
+    send_heartbeat = state.get("last_heartbeat_day") != today_key
 
-    if phase == "observation":
-        mins = int((now_dt - session_open_dt).total_seconds() / 60)
-        print(f"[{now}] Session {session_label} — observation ({mins}min/15min) → NO_TRADE silencieux")
-        return {"action": "NO_TRADE", "reason": "observation_phase"}
-
-    print(f"[{now}] Session {session_label} — phase TRADING")
-
-    # ── 1.5. Heartbeat au premier run de chaque session ────────────────────────
-    session_key   = f"{now_dt.strftime('%Y-%m-%d')}-{session_label}"
-    send_heartbeat = state.get("last_heartbeat_session") != session_key
-
-    # ── 2. Vérifier position déjà ouverte ─────────────────────────────────────
+    # ── 2. Verifier position deja ouverte ─────────────────────────────────────
     open_pos   = list_open_positions()
     pair_clean = PAIR_ID.upper().replace("/", "")
     xau_open   = [p for p in open_pos
                   if pair_clean in str(p.get("pairId", p.get("symbol", ""))).upper().replace("/", "")]
     if xau_open:
-        print(f"[{now}] Position {PAIR_ID} déjà ouverte → NO_TRADE silencieux")
+        print(f"[{now}] Position {PAIR_ID} deja ouverte → NO_TRADE silencieux")
         return {"action": "NO_TRADE", "reason": "position_already_open"}
 
-    # ── 3. Vérifier solde forex ────────────────────────────────────────────────
+    # ── 3. Verifier solde forex ────────────────────────────────────────────────
     free_margin = get_forex_free_margin()
     print(f"[Wallet] Free margin forex = {free_margin:.2f} USDT")
     if free_margin < MARGIN_USDT:
@@ -314,19 +249,9 @@ def run():
                 f"Free margin : {free_margin:.2f} USDT\n"
                 f"Transferer des fonds depuis Spot ou Futures vers le wallet Forex."
             )
-        elif send_heartbeat:
-            state["last_heartbeat_session"] = session_key
-            save_state(state)
-            notify(
-                f"Bot XAU/USD | Session {session_label} — Solde insuffisant\n\n"
-                f"Free margin : {free_margin:.2f} USDT\n"
-                f"Minimum requis : {MARGIN_USDT:.1f} USDT (0.01 lots)\n"
-                f"Impossible de trader. Transferer des fonds.\n"
-                f"{now}"
-            )
         return {"action": "NO_TRADE", "reason": "insufficient_forex_balance"}
 
-    # ── 4. Récupérer les bougies 5min ─────────────────────────────────────────
+    # ── 4. Recuperer les bougies 5min ─────────────────────────────────────────
     candles_5m = get_candles(PAIR_ID, "5m", 120)
     if len(candles_5m) < SWING_CANDLES + 5:
         print(f"[{now}] Bougies 5m insuffisantes ({len(candles_5m)}) → NO_TRADE")
@@ -335,9 +260,9 @@ def run():
     price = float(candles_5m[-1].get("close", candles_5m[-1].get("c", 0)))
     print(f"[5m] Prix actuel = {price:.2f}")
 
-    # ── 5. Trouver le Swing High / Swing Low (Fibonacci 0 et 1) ───────────────
+    # ── 5. Swing High / Swing Low → niveaux Fibonacci ─────────────────────────
     swing_high, swing_low, high_idx, low_idx = find_swing(candles_5m, SWING_CANDLES)
-    swing_range = swing_high - swing_low
+    swing_range     = swing_high - swing_low
     swing_range_pct = swing_range / price * 100
 
     print(f"[Swing] High={swing_high:.2f} (idx={high_idx}) | Low={swing_low:.2f} (idx={low_idx})")
@@ -347,45 +272,42 @@ def run():
         print(f"[{now}] Swing trop petit ({swing_range_pct:.2f}%) → NO_TRADE silencieux")
         return {"action": "NO_TRADE", "reason": "swing_range_too_small"}
 
-    # ── 6. Niveaux Fibonacci : 0 (haut), 0.5 (milieu), 1 (bas) ───────────────
     fib_0  = swing_high
     fib_05 = (swing_high + swing_low) / 2
     fib_1  = swing_low
 
     print(f"[Fib] 0={fib_0:.2f} | 0.5={fib_05:.2f} | 1={fib_1:.2f}")
 
-    # ── 7. Déterminer la direction depuis le mouvement d'ouverture ─────────────
-    # Le low le plus récent (low_idx > high_idx) → prix a chuté → BUY (rebond)
-    # Le high le plus récent (high_idx > low_idx) → prix a monté → SELL (retrace)
+    # ── 6. Direction : low recent → BUY | high recent → SELL ─────────────────
     if low_idx > high_idx:
-        direction = "buy"
+        direction    = "buy"
         direction_fr = "ACHAT"
-        print(f"[Direction] Swing LOW le plus récent → direction BUY (rebond au 0.5)")
+        print(f"[Direction] Swing LOW le plus recent → BUY (rebond vers niveau 0)")
     else:
-        direction = "sell"
+        direction    = "sell"
         direction_fr = "VENTE"
-        print(f"[Direction] Swing HIGH le plus récent → direction SELL (retrace au 0.5)")
+        print(f"[Direction] Swing HIGH le plus recent → SELL (retrace vers niveau 1)")
 
-    # ── 8. Vérifier que le prix est au niveau 0.5 ─────────────────────────────
+    # ── 7. Prix au niveau 0.5 ? ────────────────────────────────────────────────
     dist_to_05     = abs(price - fib_05)
     dist_to_05_pct = dist_to_05 / price * 100
 
-    print(f"[Fib 0.5] Distance prix/0.5 = {dist_to_05:.2f} ({dist_to_05_pct:.3f}%) | seuil={FIB_ZONE_PCT*100:.1f}%")
+    print(f"[Fib 0.5] Distance = {dist_to_05:.2f} ({dist_to_05_pct:.3f}%) | seuil={FIB_ZONE_PCT*100:.1f}%")
 
-    # ── Heartbeat session (envoyé une fois par session au premier run trading) ──
+    # ── Heartbeat quotidien ────────────────────────────────────────────────────
     if send_heartbeat:
-        state["last_heartbeat_session"] = session_key
+        state["last_heartbeat_day"] = today_key
         save_state(state)
         notify(
-            f"Bot XAU/USD actif | Session {session_label}\n\n"
-            f"Prix actuel : {price:.2f} USD\n"
-            f"Fib 0 (High): {fib_0:.2f}\n"
-            f"Fib 0.5     : {fib_05:.2f} (cible entree)\n"
-            f"Fib 1 (Low) : {fib_1:.2f}\n"
-            f"Distance 0.5: {dist_to_05_pct:.2f}% | seuil {FIB_ZONE_PCT*100:.1f}%\n"
-            f"Direction   : {direction_fr}\n"
-            f"Wallet forex: {free_margin:.2f} USDT libre\n\n"
-            f"En attente signal (prix au 0.5 + englobante)...\n"
+            f"Bot XAU/USD actif | {today_key}\n\n"
+            f"Prix : {price:.2f} USD\n"
+            f"Fib 0 (High) : {fib_0:.2f}\n"
+            f"Fib 0.5      : {fib_05:.2f} (cible entree)\n"
+            f"Fib 1 (Low)  : {fib_1:.2f}\n"
+            f"Distance 0.5 : {dist_to_05_pct:.2f}% | seuil {FIB_ZONE_PCT*100:.1f}%\n"
+            f"Direction    : {direction_fr}\n"
+            f"Wallet forex : {free_margin:.2f} USDT libre\n"
+            f"Analyses toutes les 5 min — en attente du prix au niveau 0.5\n"
             f"{now}"
         )
 
@@ -393,23 +315,13 @@ def run():
         print(f"[{now}] Prix ({price:.2f}) pas au niveau 0.5 ({fib_05:.2f}) → NO_TRADE silencieux")
         return {"action": "NO_TRADE", "reason": "price_not_at_fib_05"}
 
-    # ── 9. Confirmation directionnelle (2/3 dernières bougies dans le sens du trade) ──
-    confirmed  = is_directional_candle(candles_5m, direction)
-    confirm_type = "haussiere" if direction == "buy" else "baissiere"
-
-    if not confirmed:
-        print(f"[{now}] Momentum {confirm_type} insuffisant au 0.5 → NO_TRADE silencieux")
-        return {"action": "NO_TRADE", "reason": f"no_{direction}_momentum"}
-
-    print(f"[Confirmation] Momentum {confirm_type} confirme au niveau 0.5")
-
-    # ── 10. Calcul SL / TP sur niveaux Fibonacci ──────────────────────────────
+    # ── 8. SL / TP sur niveaux Fibonacci ──────────────────────────────────────
     if direction == "buy":
-        sl = round(fib_1 * (1 - FIB_SL_BUFFER), 2)   # légèrement sous fib_1
-        tp = round(fib_0, 2)                            # objectif fib_0
+        sl = round(fib_1 * (1 - FIB_SL_BUFFER), 2)
+        tp = round(fib_0, 2)
     else:
-        sl = round(fib_0 * (1 + FIB_SL_BUFFER), 2)   # légèrement au-dessus fib_0
-        tp = round(fib_1, 2)                            # objectif fib_1
+        sl = round(fib_0 * (1 + FIB_SL_BUFFER), 2)
+        tp = round(fib_1, 2)
 
     sl_dist_pct = abs(price - sl) / price * 100
     tp_dist_pct = abs(tp - price) / price * 100
@@ -420,7 +332,7 @@ def run():
     lots = calc_lots(price)
     print(f"[Trade] {direction.upper()} {lots} lots | Entry={price:.2f} | SL={sl} | TP={tp}")
 
-    # ── 11. Exécution de l'ordre ───────────────────────────────────────────────
+    # ── 9. Execution de l'ordre ───────────────────────────────────────────────
     try:
         result = open_position(direction, lots, sl, tp)
     except RuntimeError as order_err:
@@ -429,7 +341,6 @@ def run():
         notify(
             f"ORDRE REJETE — XAU/USD Bot 2\n\n"
             f"Direction : {direction_fr}\n"
-            f"Session   : {session_label}\n"
             f"Lots      : {lots} | SL={sl:.2f} | TP={tp:.2f}\n"
             f"Raison    : {err_detail[:300]}\n\n"
             f"Verifier les parametres Moonx (margin, lots min/max).\n"
@@ -444,17 +355,16 @@ def run():
               or "unknown") if isinstance(result, dict) else "unknown"
     print(f"[Moonx] Position creee ID={pos_id}")
 
-    # ── 12. Mise à jour de l'état ──────────────────────────────────────────────
+    # ── 10. Mise a jour de l'etat ─────────────────────────────────────────────
     state["last_position_id"] = pos_id
     state["last_trade_ts"]    = now
     state["total_trades"]     = state.get("total_trades", 0) + 1
     save_state(state)
 
-    # ── 13. Notification Telegram ──────────────────────────────────────────────
+    # ── 11. Notification Telegram ─────────────────────────────────────────────
     emoji = "📈" if direction == "buy" else "📉"
     msg = (
         f"{emoji} TRADE EXECUTE — XAU/USD Bot 2 | Strategie 0.5\n\n"
-        f"Session    : {session_label}\n"
         f"Direction  : {direction_fr}\n"
         f"Entree     : {price:.2f} USD (niveau 0.5)\n"
         f"Stop-Loss  : {sl:.2f} (niveau 1 — {sl_dist_pct:.2f}%)\n"
@@ -466,24 +376,22 @@ def run():
         f"Niveau 0.5 : {fib_05:.2f} (entree)\n"
         f"Niveau 1   : {fib_1:.2f} (Swing Low)\n"
         f"Range swing: {swing_range:.2f} ({swing_range_pct:.2f}%)\n\n"
-        f"Momentum   : {confirm_type} confirme (2/3 bougies)\n"
         f"Position ID: {pos_id}\n"
         f"Claude DayTrading Bot | {now}"
     )
     notify(msg)
 
     return {
-        "action":    "TRADE",
-        "direction": direction,
-        "session":   session_label,
-        "entry":     price,
-        "fib_0":     fib_0,
-        "fib_05":    fib_05,
-        "fib_1":     fib_1,
-        "sl":        sl,
-        "tp":        tp,
-        "lots":      lots,
-        "rr":        round(rr, 2),
+        "action":      "TRADE",
+        "direction":   direction,
+        "entry":       price,
+        "fib_0":       fib_0,
+        "fib_05":      fib_05,
+        "fib_1":       fib_1,
+        "sl":          sl,
+        "tp":          tp,
+        "lots":        lots,
+        "rr":          round(rr, 2),
         "position_id": pos_id,
     }
 
@@ -492,7 +400,7 @@ def run():
 if __name__ == "__main__":
     try:
         result = run()
-        print(f"\n[Résultat] {json.dumps(result, indent=2)}")
+        print(f"\n[Resultat] {json.dumps(result, indent=2)}")
     except Exception as exc:
         tb = traceback.format_exc()
         print(f"[ERREUR] {exc}\n{tb}")
