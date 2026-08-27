@@ -41,7 +41,7 @@ MIN_LOTS    = 0.01    # lot minimum Moonx XAUUSD
 
 # ─── Stratégie 0.5 ─────────────────────────────────────────────────────────────
 SWING_CANDLES   = 40    # bougies 5min pour trouver le swing H/L (~3h20)
-FIB_ZONE_PCT    = 0.003 # 0.3% — tolérance autour du niveau 0.5 pour déclencher l'entrée
+FIB_ZONE_PCT    = 0.008 # 0.8% — tolérance autour du niveau 0.5 (élargi pour plus de signaux)
 FIB_SL_BUFFER   = 0.001 # 0.1% buffer au-delà du swing pour le SL (évite le faux stop)
 MIN_SWING_RANGE = 0.002 # le swing doit être ≥ 0.2% du prix pour être valide
 
@@ -201,38 +201,20 @@ def find_swing(candles, lookback):
     return swing_high, swing_low, high_idx, low_idx
 
 
-def is_bullish_engulfing(candles):
+def is_directional_candle(candles, direction):
     """
-    Bougie verte englobante : la bougie courante (verte) englobe la précédente (rouge).
-    Confirme un retournement haussier au niveau 0.5.
+    Confirmation directionnelle simple au niveau 0.5 :
+    - BUY  : au moins 2 des 3 dernières bougies sont vertes (close > open)
+    - SELL : au moins 2 des 3 dernières bougies sont rouges (close < open)
+    Plus souple que l'englobante stricte, garde la logique de confirmation.
     """
-    if len(candles) < 2:
+    if len(candles) < 3:
         return False
-    prev = _ohlc(candles[-2])
-    curr = _ohlc(candles[-1])
-    return (
-        curr["close"] > curr["open"] and    # bougie courante verte
-        prev["close"] < prev["open"] and    # bougie précédente rouge
-        curr["open"]  <= prev["close"] and  # ouverture sous le close précédent
-        curr["close"] >= prev["open"]       # clôture au-dessus de l'open précédent
-    )
-
-
-def is_bearish_engulfing(candles):
-    """
-    Bougie rouge englobante : la bougie courante (rouge) englobe la précédente (verte).
-    Confirme un retournement baissier au niveau 0.5.
-    """
-    if len(candles) < 2:
-        return False
-    prev = _ohlc(candles[-2])
-    curr = _ohlc(candles[-1])
-    return (
-        curr["close"] < curr["open"] and    # bougie courante rouge
-        prev["close"] > prev["open"] and    # bougie précédente verte
-        curr["open"]  >= prev["close"] and  # ouverture au-dessus du close précédent
-        curr["close"] <= prev["open"]       # clôture sous l'open précédent
-    )
+    recent = [_ohlc(c) for c in candles[-3:]]
+    if direction == "buy":
+        return sum(1 for c in recent if c["close"] > c["open"]) >= 2
+    else:
+        return sum(1 for c in recent if c["close"] < c["open"]) >= 2
 
 
 def get_active_session(now_dt):
@@ -411,19 +393,15 @@ def run():
         print(f"[{now}] Prix ({price:.2f}) pas au niveau 0.5 ({fib_05:.2f}) → NO_TRADE silencieux")
         return {"action": "NO_TRADE", "reason": "price_not_at_fib_05"}
 
-    # ── 9. Confirmation par bougie englobante ──────────────────────────────────
-    if direction == "buy":
-        confirmed = is_bullish_engulfing(candles_5m)
-        engulfing_type = "haussiere"
-    else:
-        confirmed = is_bearish_engulfing(candles_5m)
-        engulfing_type = "baissiere"
+    # ── 9. Confirmation directionnelle (2/3 dernières bougies dans le sens du trade) ──
+    confirmed  = is_directional_candle(candles_5m, direction)
+    confirm_type = "haussiere" if direction == "buy" else "baissiere"
 
     if not confirmed:
-        print(f"[{now}] Pas de bougie englobante {engulfing_type} au 0.5 → NO_TRADE silencieux")
-        return {"action": "NO_TRADE", "reason": f"no_{direction}_engulfing"}
+        print(f"[{now}] Momentum {confirm_type} insuffisant au 0.5 → NO_TRADE silencieux")
+        return {"action": "NO_TRADE", "reason": f"no_{direction}_momentum"}
 
-    print(f"[Englobante] Bougie englobante {engulfing_type} confirmee au niveau 0.5")
+    print(f"[Confirmation] Momentum {confirm_type} confirme au niveau 0.5")
 
     # ── 10. Calcul SL / TP sur niveaux Fibonacci ──────────────────────────────
     if direction == "buy":
@@ -488,7 +466,7 @@ def run():
         f"Niveau 0.5 : {fib_05:.2f} (entree)\n"
         f"Niveau 1   : {fib_1:.2f} (Swing Low)\n"
         f"Range swing: {swing_range:.2f} ({swing_range_pct:.2f}%)\n\n"
-        f"Englobante : {engulfing_type} confirmee\n"
+        f"Momentum   : {confirm_type} confirme (2/3 bougies)\n"
         f"Position ID: {pos_id}\n"
         f"Claude DayTrading Bot | {now}"
     )
