@@ -39,10 +39,10 @@ MARGIN_USDT = 9.0     # marge cible → 9x5/4600 ≈ 0.01 lots → marge reelle 
 MIN_LOTS    = 0.01    # lot minimum Moonx XAUUSD
 
 # ─── Strategie 0.5 ─────────────────────────────────────────────────────────────
-SWING_CANDLES   = 40    # bougies 5min pour trouver le swing H/L (~3h20)
+SWING_CANDLES   = 24    # bougies 1H pour trouver le swing H/L (24h de donnees fiables)
 FIB_ZONE_PCT    = 0.008 # 0.8% — zone d'entree autour du niveau 0.5
 FIB_SL_BUFFER   = 0.001 # 0.1% buffer au-dela du swing pour le SL
-MIN_SWING_RANGE = 0.002 # le swing doit etre >= 0.2% du prix pour etre valide
+MIN_SWING_RANGE = 0.003 # le swing doit etre >= 0.3% du prix pour etre valide
 
 STATE_FILE = "state_daytrading.json"
 
@@ -256,17 +256,23 @@ def run():
             )
         return {"action": "NO_TRADE", "reason": "insufficient_forex_balance"}
 
-    # ── 4. Recuperer les bougies 5min ─────────────────────────────────────────
-    candles_5m = get_candles(PAIR_ID, "5m", 120)
-    if len(candles_5m) < SWING_CANDLES + 5:
-        print(f"[{now}] Bougies 5m insuffisantes ({len(candles_5m)}) → NO_TRADE")
+    # ── 4. Recuperer les bougies ───────────────────────────────────────────────
+    # Prix actuel depuis les dernieres bougies 5m (timestamp recents)
+    candles_5m = get_candles(PAIR_ID, "5m", 5)
+    if not candles_5m:
+        print(f"[{now}] Bougies 5m indisponibles → NO_TRADE")
         return {"action": "NO_TRADE", "reason": "insufficient_5m_candles"}
-
     price = float(candles_5m[-1].get("close", candles_5m[-1].get("c", 0)))
     print(f"[5m] Prix actuel = {price:.2f}")
 
+    # Bougies 1H pour le swing (fiables, 1 bougie = 1 heure) + tendance
+    candles_1h = get_candles(PAIR_ID, "1h", 30)
+    if len(candles_1h) < SWING_CANDLES + 5:
+        print(f"[{now}] Bougies 1H insuffisantes ({len(candles_1h)}) → NO_TRADE")
+        return {"action": "NO_TRADE", "reason": "insufficient_1h_candles"}
+
     # ── 5. Swing High / Swing Low → niveaux Fibonacci ─────────────────────────
-    swing_high, swing_low, high_idx, low_idx = find_swing(candles_5m, SWING_CANDLES)
+    swing_high, swing_low, high_idx, low_idx = find_swing(candles_1h, SWING_CANDLES)
     swing_range     = swing_high - swing_low
     swing_range_pct = swing_range / price * 100
 
@@ -294,9 +300,8 @@ def run():
         print(f"[Direction] Swing HIGH le plus recent → SELL (retrace vers niveau 1)")
 
     # ── 6.5. Filtre de tendance 1H (ne jamais trader contre la tendance) ───────
-    # Compare prix actuel vs prix il y a ~4H (4 bougies 1H)
+    # Compare prix actuel vs prix il y a ~4H (candles_1h deja chargees en step 4)
     try:
-        candles_1h = get_candles(PAIR_ID, "1h", 6)
         price_4h_ago = float(candles_1h[-5].get("close", candles_1h[-5].get("c", price)))
         trend_up = price > price_4h_ago
         trend_fr = "haussiere" if trend_up else "baissiere"
