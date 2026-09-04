@@ -293,6 +293,24 @@ def run():
         direction_fr = "VENTE"
         print(f"[Direction] Swing HIGH le plus recent → SELL (retrace vers niveau 1)")
 
+    # ── 6.5. Filtre de tendance 1H (ne jamais trader contre la tendance) ───────
+    # Compare prix actuel vs prix il y a ~4H (4 bougies 1H)
+    try:
+        candles_1h = get_candles(PAIR_ID, "1h", 6)
+        price_4h_ago = float(candles_1h[-5].get("close", candles_1h[-5].get("c", price)))
+        trend_up = price > price_4h_ago
+        trend_fr = "haussiere" if trend_up else "baissiere"
+        print(f"[Tendance 1H] Prix 4H ago={price_4h_ago:.2f} | Prix={price:.2f} | Tendance={trend_fr}")
+        if direction == "buy" and not trend_up:
+            print(f"[{now}] ACHAT contre tendance baissiere → NO_TRADE")
+            return {"action": "NO_TRADE", "reason": "trend_conflict_buy_downtrend"}
+        if direction == "sell" and trend_up:
+            print(f"[{now}] VENTE contre tendance haussiere → NO_TRADE")
+            return {"action": "NO_TRADE", "reason": "trend_conflict_sell_uptrend"}
+    except Exception as e:
+        trend_fr = "inconnue"
+        print(f"[Tendance] Impossible de verifier la tendance 1H: {e} — on continue")
+
     # ── 7. Prix au niveau 0.5 ? ────────────────────────────────────────────────
     dist_to_05     = abs(price - fib_05)
     dist_to_05_pct = dist_to_05 / price * 100
@@ -311,6 +329,7 @@ def run():
             f"Fib 1 (Low)  : {fib_1:.2f}\n"
             f"Distance 0.5 : {dist_to_05_pct:.2f}% | seuil {FIB_ZONE_PCT*100:.1f}%\n"
             f"Direction    : {direction_fr}\n"
+            f"Tendance 1H  : {trend_fr}\n"
             f"Wallet forex : {free_margin:.2f} USDT libre\n"
             f"Analyses toutes les 5 min — en attente du prix au niveau 0.5\n"
             f"{now}"
