@@ -243,11 +243,16 @@ def run():
     print(f"[Wallet] Free margin forex = {free_margin:.2f} USDT")
     if free_margin < MARGIN_USDT:
         print(f"[{now}] Solde forex insuffisant ({free_margin:.2f} USDT < {MARGIN_USDT}) → NO_TRADE")
-        if free_margin < 1.0:
+        if send_heartbeat:
+            state["last_heartbeat_day"] = today_key
+            save_state(state)
             notify(
-                f"Alerte XAU/USD Bot 2 — Wallet forex vide | {now}\n\n"
-                f"Free margin : {free_margin:.2f} USDT\n"
-                f"Transferer des fonds depuis Spot ou Futures vers le wallet Forex."
+                f"Alerte XAU/USD Bot 2 — Solde insuffisant | {today_key}\n\n"
+                f"Free margin forex : {free_margin:.2f} USDT\n"
+                f"Minimum requis   : {MARGIN_USDT:.1f} USDT (0.01 lots)\n\n"
+                f"Le bot ne peut pas trader.\n"
+                f"Transferer des fonds vers le wallet Forex pour reprendre.\n"
+                f"{now}"
             )
         return {"action": "NO_TRADE", "reason": "insufficient_forex_balance"}
 
