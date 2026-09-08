@@ -436,14 +436,24 @@ def run():
     # ── 8. Garde-fou capital : free_margin >= risque_reel × 1.1 ─────────────
     if free_margin < min_free_needed:
         amount_needed = round(min_free_needed - free_margin + 2, 0)
+        emoji = "📈" if direction == "buy" else "📉"
         print(f"[{now}] Capital insuffisant : {free_margin:.2f}$ < {min_free_needed:.2f}$ → NO_TRADE")
         notify(
-            f"Alerte XAU/USD Bot 2 — Capital insuffisant | {today_key}\n\n"
-            f"Signal Fib 0.5 detecte : {direction_fr} a {price:.2f} USD\n"
-            f"SL Fibonacci : {sl:.2f} ({sl_distance:.0f} pts de l entree)\n"
-            f"Risque reel  : {real_risk_usdt:.2f} USDT\n"
-            f"Free margin  : {free_margin:.2f} USDT (minimum : {min_free_needed:.2f} USDT)\n\n"
-            f"Transferer {amount_needed:.0f} USDT vers le wallet Forex pour que ce trade soit pris.\n"
+            f"{emoji} SIGNAL XAU/USD — Fonds insuffisants | {today_key}\n\n"
+            f"ANALYSE COMPLETE — le bot est pret, il attend les fonds\n\n"
+            f"Signal      : {direction_fr} a {price:.2f} USD\n"
+            f"Tendance 1H : {trend_fr} | Tendance daily : {daily_fr}\n\n"
+            f"-- Fibonacci --\n"
+            f"Fib 0 (High) : {fib_0:.2f} (Swing High)\n"
+            f"Fib 0.5      : {fib_05:.2f} (zone entree — prix actuel {price:.2f})\n"
+            f"Fib 1 (Low)  : {fib_1:.2f} (Swing Low)\n"
+            f"Range swing  : {swing_range:.2f} ({swing_range_pct:.2f}%)\n\n"
+            f"Stop-Loss    : {sl:.2f} (Fib 1 — {sl_distance:.0f} pts — risque {real_risk_usdt:.2f} USDT)\n"
+            f"Take-Profit  : {tp:.2f} (Fib 0 — {abs(tp - price):.0f} pts — gain {real_profit_usdt:.2f} USDT)\n"
+            f"R/R          : 1:{rr:.2f}\n\n"
+            f"Free margin actuel  : {free_margin:.2f} USDT\n"
+            f"Free margin minimum : {min_free_needed:.2f} USDT\n"
+            f"Transferer {amount_needed:.0f} USDT sur le wallet Forex pour activer ce trade.\n"
             f"{now}"
         )
         return {"action": "NO_TRADE", "reason": "insufficient_capital_for_fib_sl"}
