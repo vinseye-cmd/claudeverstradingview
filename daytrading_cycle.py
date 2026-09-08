@@ -51,6 +51,7 @@ TP_POINTS      = 20    # Take-Profit: 20 points = 20 USDT de gain par trade (R/R
 MIN_RISK_RATIO = 2.0   # free_margin minimum = risque reel × MIN_RISK_RATIO
 
 STATE_FILE = "state_daytrading.json"
+DRY_RUN    = os.environ.get("DRY_RUN", "false").lower() == "true"
 
 
 # ─── Moonx REST API (JSON-RPC 2.0) ────────────────────────────────────────────
@@ -306,22 +307,43 @@ def run():
         direction_fr = "VENTE"
         print(f"[Direction] Swing HIGH le plus recent → SELL (retrace vers niveau 1)")
 
-    # ── 6.5. Filtre de tendance 1H (ne jamais trader contre la tendance) ───────
-    # Compare prix actuel vs prix il y a ~4H (candles_1h deja chargees en step 4)
+    # ── 6.5. Filtre de tendance 1H (court terme ~4H) ─────────────────────────
+    trend_fr  = "inconnue"
+    daily_fr  = "inconnue"
     try:
         price_4h_ago = float(candles_1h[-5].get("close", candles_1h[-5].get("c", price)))
         trend_up = price > price_4h_ago
         trend_fr = "haussiere" if trend_up else "baissiere"
         print(f"[Tendance 1H] Prix 4H ago={price_4h_ago:.2f} | Prix={price:.2f} | Tendance={trend_fr}")
         if direction == "buy" and not trend_up:
-            print(f"[{now}] ACHAT contre tendance baissiere → NO_TRADE")
-            return {"action": "NO_TRADE", "reason": "trend_conflict_buy_downtrend"}
+            print(f"[{now}] ACHAT contre tendance 1H baissiere → NO_TRADE")
+            return {"action": "NO_TRADE", "reason": "trend_conflict_buy_downtrend_1h"}
         if direction == "sell" and trend_up:
-            print(f"[{now}] VENTE contre tendance haussiere → NO_TRADE")
-            return {"action": "NO_TRADE", "reason": "trend_conflict_sell_uptrend"}
+            print(f"[{now}] VENTE contre tendance 1H haussiere → NO_TRADE")
+            return {"action": "NO_TRADE", "reason": "trend_conflict_sell_uptrend_1h"}
     except Exception as e:
-        trend_fr = "inconnue"
-        print(f"[Tendance] Impossible de verifier la tendance 1H: {e} — on continue")
+        print(f"[Tendance 1H] Impossible: {e} — on continue")
+
+    # ── 6.6. Filtre de tendance DAILY (macro sur 5 jours) ────────────────────
+    # Bloque BUY si or en baisse sur 5j (evite d'acheter dans un downtrend macro)
+    try:
+        candles_1d = get_candles(PAIR_ID, "1d", 7)
+        if len(candles_1d) >= 6:
+            price_5d_ago = float(candles_1d[-6].get("close", candles_1d[-6].get("c", price)))
+            daily_up   = price > price_5d_ago
+            daily_fr   = "haussiere" if daily_up else "baissiere"
+            daily_move = (price - price_5d_ago) / price_5d_ago * 100
+            print(f"[Tendance Daily] 5j ago={price_5d_ago:.2f} | Prix={price:.2f} | Trend={daily_fr} ({daily_move:+.2f}%)")
+            if direction == "buy" and not daily_up:
+                print(f"[{now}] ACHAT contre tendance daily baissiere ({daily_move:.2f}%) → NO_TRADE")
+                return {"action": "NO_TRADE", "reason": "trend_conflict_buy_daily_downtrend"}
+            if direction == "sell" and daily_up:
+                print(f"[{now}] VENTE contre tendance daily haussiere ({daily_move:.2f}%) → NO_TRADE")
+                return {"action": "NO_TRADE", "reason": "trend_conflict_sell_daily_uptrend"}
+        else:
+            print("[Tendance Daily] Pas assez de donnees → filtre ignore")
+    except Exception as e:
+        print(f"[Tendance Daily] Impossible: {e} — on continue")
 
     # ── 7. Prix au niveau 0.5 ? ────────────────────────────────────────────────
     dist_to_05     = abs(price - fib_05)
@@ -355,7 +377,7 @@ def run():
             f"Fib 1 (Low)  : {fib_1:.2f}\n"
             f"Distance 0.5 : {dist_to_05_pct:.2f}% | seuil {FIB_ZONE_PCT*100:.1f}%\n"
             f"Direction    : {direction_fr}\n"
-            f"Tendance 1H  : {trend_fr}\n"
+            f"Tendance 1H  : {trend_fr} | Tendance Daily : {daily_fr}\n"
             f"Risque/trade : {real_risk_usdt:.0f} USDT (SL {SL_POINTS}pts) | Gain cible : {real_profit_usdt:.0f} USDT\n"
             f"Wallet forex : {free_margin:.2f} USDT libre | Min requis : {min_free_needed:.0f} USDT\n"
             f"{capital_msg}\n"
@@ -395,7 +417,30 @@ def run():
     print(f"[SL/TP] SL={sl:.2f} ({SL_POINTS}pts={real_risk_usdt:.0f}$) | TP={tp:.2f} ({TP_POINTS}pts={real_profit_usdt:.0f}$) | R/R=1:{rr:.2f}")
     print(f"[Trade] {direction.upper()} {lots} lots | Entry={price:.2f} | SL={sl} | TP={tp}")
 
-    # ── 9. Execution de l'ordre ───────────────────────────────────────────────
+    # ── 9. Execution de l'ordre (ou simulation DRY_RUN) ──────────────────────
+    if DRY_RUN:
+        print(f"[DRY_RUN] Signal {direction_fr} a {price:.2f} | SL={sl} | TP={tp} — aucun ordre reel")
+        emoji = "📈" if direction == "buy" else "📉"
+        actual_margin = round(lots * price / LEVERAGE_REAL, 2)
+        notify(
+            f"[SIMULATION] {emoji} SIGNAL detecte — XAU/USD Bot 2\n\n"
+            f"Mode DRY_RUN actif — aucun ordre place\n\n"
+            f"Direction  : {direction_fr}\n"
+            f"Entree     : {price:.2f} USD (niveau 0.5)\n"
+            f"Stop-Loss  : {sl:.2f} ({SL_POINTS} pts — risque {real_risk_usdt:.0f} USDT)\n"
+            f"Take-Profit: {tp:.2f} ({TP_POINTS} pts — gain {real_profit_usdt:.0f} USDT)\n"
+            f"R/R        : 1:{rr:.2f}\n"
+            f"Tendance 1H : {trend_fr} | Daily : {daily_fr}\n\n"
+            f"-- Fibonacci --\n"
+            f"Niveau 0   : {fib_0:.2f} | 0.5 : {fib_05:.2f} | 1 : {fib_1:.2f}\n"
+            f"Range swing: {swing_range:.2f} ({swing_range_pct:.2f}%)\n\n"
+            f"Pour activer le trading reel : desactiver DRY_RUN dans les secrets GitHub\n"
+            f"Claude DayTrading Bot | {now}"
+        )
+        state["total_signals"] = state.get("total_signals", 0) + 1
+        save_state(state)
+        return {"action": "DRY_RUN_SIGNAL", "direction": direction, "entry": price, "sl": sl, "tp": tp}
+
     try:
         result = open_position(direction, lots, sl, tp)
     except RuntimeError as order_err:
