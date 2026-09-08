@@ -118,6 +118,13 @@ def list_open_positions():
     return result.get("positions", result.get("data", []))
 
 
+def get_forex_trade_history(limit=5):
+    result = _moonx_call("get_forex_trade_history", {"limit": limit})
+    if isinstance(result, list):
+        return result
+    return result.get("trades", result.get("data", []))
+
+
 def get_forex_free_margin():
     try:
         result = _moonx_call("get_account_overview", {})
@@ -233,11 +240,42 @@ def run():
     today_key = now_dt.strftime("%Y-%m-%d")
     send_heartbeat = state.get("last_heartbeat_day") != today_key
 
-    # ── 2. Verifier position deja ouverte ─────────────────────────────────────
+    # ── 2. Verifier position deja ouverte + notifier cloture ─────────────────
     open_pos   = list_open_positions()
     pair_clean = PAIR_ID.upper().replace("/", "")
     xau_open   = [p for p in open_pos
                   if pair_clean in str(p.get("pairId", p.get("symbol", ""))).upper().replace("/", "")]
+
+    # Notifier si une position suivie vient de se fermer (SL, TP ou liquidation)
+    last_pos_id = state.get("last_position_id")
+    if last_pos_id and last_pos_id not in ("unknown", "DRY_RUN"):
+        still_open = any(str(p.get("_id", p.get("id", ""))) == last_pos_id for p in xau_open)
+        if not still_open:
+            try:
+                history = get_forex_trade_history(limit=5)
+                closed = next((t for t in history if str(t.get("_id", "")) == last_pos_id), None)
+                if closed:
+                    pnl      = float(closed.get("pnl", 0))
+                    reason   = closed.get("metadata", {}).get("autoCloseReason", closed.get("status", "?"))
+                    entry_p  = closed.get("entryPrice", "?")
+                    exit_p   = closed.get("exitPrice", "?")
+                    emoji_r  = "✅" if pnl > 0 else "❌"
+                    reason_fr = {"sl": "Stop-Loss atteint", "tp": "Take-Profit atteint",
+                                 "liquidation": "LIQUIDATION (solde insuffisant)",
+                                 "closed": "Fermeture manuelle"}.get(reason, reason)
+                    notify(
+                        f"{emoji_r} TRADE FERME — XAU/USD Bot 2\n\n"
+                        f"Resultat  : {'GAIN' if pnl > 0 else 'PERTE'} {pnl:+.2f} USDT\n"
+                        f"Raison    : {reason_fr}\n"
+                        f"Entree    : {entry_p} | Sortie : {exit_p}\n"
+                        f"Position ID : {last_pos_id}\n"
+                        f"{now}"
+                    )
+            except Exception as e:
+                print(f"[ClotureCheck] Erreur: {e}")
+            state["last_position_id"] = None
+            save_state(state)
+
     if xau_open:
         print(f"[{now}] Position {PAIR_ID} deja ouverte → NO_TRADE silencieux")
         return {"action": "NO_TRADE", "reason": "position_already_open"}
