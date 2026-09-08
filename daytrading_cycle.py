@@ -43,12 +43,8 @@ MIN_LOTS       = 0.01  # lot minimum Moonx XAUUSD
 SWING_CANDLES   = 24    # bougies 1H pour trouver le swing H/L (24h de donnees fiables)
 FIB_ZONE_PCT    = 0.008 # 0.8% — zone d'entree autour du niveau 0.5
 MIN_SWING_RANGE = 0.003 # le swing doit etre >= 0.3% du prix pour etre valide
-
-# SL/TP en points fixes — adaptes au capital disponible
-# 0.01 lots × 100 oz × 1 point = 1 USDT de P&L par point
-SL_POINTS      = 15    # Stop-Loss  : 15 points = 15 USDT de risque par trade
-TP_POINTS      = 20    # Take-Profit: 20 points = 20 USDT de gain par trade (R/R 1:1.33)
-MIN_RISK_RATIO = 2.0   # free_margin minimum = risque reel × MIN_RISK_RATIO
+FIB_SL_BUFFER   = 0.001 # 0.1% buffer au-dela de l extreme du swing pour le SL
+MIN_RISK_RATIO  = 1.1   # free_margin >= risque_reel × 1.1 (10% buffer anti-liquidation)
 
 STATE_FILE = "state_daytrading.json"
 DRY_RUN    = os.environ.get("DRY_RUN", "false").lower() == "true"
@@ -201,7 +197,7 @@ def calc_lots(entry_price):
     lots = (MARGIN_USDT * LEVERAGE_REAL) / (entry_price * CONTRACT_SIZE)
     lots = max(MIN_LOTS, round(lots, 2))
     margin_check = lots * entry_price * CONTRACT_SIZE / LEVERAGE_REAL
-    print(f"[calc_lots] lots={lots} | marge reelle={margin_check:.2f} USDT | risque SL={lots * CONTRACT_SIZE * SL_POINTS:.2f} USDT")
+    print(f"[calc_lots] lots={lots} | marge reelle={margin_check:.2f} USDT | P&L par point={lots * CONTRACT_SIZE:.2f} USDT")
     return lots
 
 
@@ -351,12 +347,22 @@ def run():
 
     print(f"[Fib 0.5] Distance = {dist_to_05:.2f} ({dist_to_05_pct:.3f}%) | seuil={FIB_ZONE_PCT*100:.1f}%")
 
-    # ── Calcul du risque reel avant heartbeat ─────────────────────────────────
-    lots             = calc_lots(price)
-    real_risk_usdt   = lots * CONTRACT_SIZE * SL_POINTS    # ex: 0.01 × 100 × 15 = 15$
-    real_profit_usdt = lots * CONTRACT_SIZE * TP_POINTS    # ex: 0.01 × 100 × 20 = 20$
-    min_free_needed  = real_risk_usdt * MIN_RISK_RATIO     # ex: 15 × 2 = 30$
+    # ── Calcul SL/TP Fibonacci + risque reel avant heartbeat ─────────────────
+    lots = calc_lots(price)
+    if direction == "buy":
+        sl = round(fib_1 * (1 - FIB_SL_BUFFER), 2)
+        tp = round(fib_0, 2)
+    else:
+        sl = round(fib_0 * (1 + FIB_SL_BUFFER), 2)
+        tp = round(fib_1, 2)
 
+    sl_distance      = abs(price - sl)                       # pts entre entree et SL
+    real_risk_usdt   = lots * CONTRACT_SIZE * sl_distance    # risque reel en USDT
+    real_profit_usdt = lots * CONTRACT_SIZE * abs(tp - price)
+    rr               = real_profit_usdt / real_risk_usdt if real_risk_usdt > 0 else 0
+    min_free_needed  = real_risk_usdt * MIN_RISK_RATIO       # free_margin minimum
+
+    print(f"[SL/TP] SL={sl:.2f} ({sl_distance:.1f}pts={real_risk_usdt:.2f}$) | TP={tp:.2f} ({abs(tp-price):.1f}pts={real_profit_usdt:.2f}$) | R/R=1:{rr:.2f}")
     print(f"[Capital] Free margin={free_margin:.2f} | Risque={real_risk_usdt:.2f}$ | Min requis={min_free_needed:.2f}$")
 
     # ── Heartbeat quotidien ────────────────────────────────────────────────────
@@ -378,7 +384,7 @@ def run():
             f"Distance 0.5 : {dist_to_05_pct:.2f}% | seuil {FIB_ZONE_PCT*100:.1f}%\n"
             f"Direction    : {direction_fr}\n"
             f"Tendance 1H  : {trend_fr} | Tendance Daily : {daily_fr}\n"
-            f"Risque/trade : {real_risk_usdt:.0f} USDT (SL {SL_POINTS}pts) | Gain cible : {real_profit_usdt:.0f} USDT\n"
+            f"Risque/trade : {real_risk_usdt:.2f} USDT (SL Fib 1) | Gain cible : {real_profit_usdt:.2f} USDT (TP Fib 0)\n"
             f"Wallet forex : {free_margin:.2f} USDT libre | Min requis : {min_free_needed:.0f} USDT\n"
             f"{capital_msg}\n"
             f"Analyses toutes les 5 min\n"
@@ -389,32 +395,21 @@ def run():
         print(f"[{now}] Prix ({price:.2f}) pas au niveau 0.5 ({fib_05:.2f}) → NO_TRADE silencieux")
         return {"action": "NO_TRADE", "reason": "price_not_at_fib_05"}
 
-    # ── 8. Garde-fou capital + SL/TP en points fixes ──────────────────────────
+    # ── 8. Garde-fou capital : free_margin >= risque_reel × 1.1 ─────────────
     if free_margin < min_free_needed:
         amount_needed = round(min_free_needed - free_margin + 2, 0)
-        print(f"[{now}] Capital insuffisant : free_margin={free_margin:.2f} < {min_free_needed:.2f} → NO_TRADE")
+        print(f"[{now}] Capital insuffisant : {free_margin:.2f}$ < {min_free_needed:.2f}$ → NO_TRADE")
         notify(
             f"Alerte XAU/USD Bot 2 — Capital insuffisant | {today_key}\n\n"
-            f"Signal detecte  : {direction_fr} a {price:.2f} USD\n"
-            f"Risque par trade : {real_risk_usdt:.0f} USDT (SL {SL_POINTS} pts)\n"
-            f"Free margin actuel : {free_margin:.2f} USDT\n"
-            f"Free margin minimum : {min_free_needed:.0f} USDT (risque × {MIN_RISK_RATIO:.0f})\n\n"
-            f"Transferer {amount_needed:.0f} USDT vers le wallet Forex pour reprendre.\n"
-            f"(Futures disponible : verifier compte Moonx)\n"
+            f"Signal Fib 0.5 detecte : {direction_fr} a {price:.2f} USD\n"
+            f"SL Fibonacci : {sl:.2f} ({sl_distance:.0f} pts de l entree)\n"
+            f"Risque reel  : {real_risk_usdt:.2f} USDT\n"
+            f"Free margin  : {free_margin:.2f} USDT (minimum : {min_free_needed:.2f} USDT)\n\n"
+            f"Transferer {amount_needed:.0f} USDT vers le wallet Forex pour que ce trade soit pris.\n"
             f"{now}"
         )
-        return {"action": "NO_TRADE", "reason": "insufficient_capital_for_risk"}
+        return {"action": "NO_TRADE", "reason": "insufficient_capital_for_fib_sl"}
 
-    # SL et TP en points fixes — risque controle independamment du swing
-    if direction == "buy":
-        sl = round(price - SL_POINTS, 2)
-        tp = round(price + TP_POINTS, 2)
-    else:
-        sl = round(price + SL_POINTS, 2)
-        tp = round(price - TP_POINTS, 2)
-
-    rr = TP_POINTS / SL_POINTS
-    print(f"[SL/TP] SL={sl:.2f} ({SL_POINTS}pts={real_risk_usdt:.0f}$) | TP={tp:.2f} ({TP_POINTS}pts={real_profit_usdt:.0f}$) | R/R=1:{rr:.2f}")
     print(f"[Trade] {direction.upper()} {lots} lots | Entry={price:.2f} | SL={sl} | TP={tp}")
 
     # ── 9. Execution de l'ordre (ou simulation DRY_RUN) ──────────────────────
@@ -427,14 +422,13 @@ def run():
             f"Mode DRY_RUN actif — aucun ordre place\n\n"
             f"Direction  : {direction_fr}\n"
             f"Entree     : {price:.2f} USD (niveau 0.5)\n"
-            f"Stop-Loss  : {sl:.2f} ({SL_POINTS} pts — risque {real_risk_usdt:.0f} USDT)\n"
-            f"Take-Profit: {tp:.2f} ({TP_POINTS} pts — gain {real_profit_usdt:.0f} USDT)\n"
+            f"Stop-Loss  : {sl:.2f} (Fib 1 — risque {real_risk_usdt:.2f} USDT)\n"
+            f"Take-Profit: {tp:.2f} (Fib 0 — gain {real_profit_usdt:.2f} USDT)\n"
             f"R/R        : 1:{rr:.2f}\n"
             f"Tendance 1H : {trend_fr} | Daily : {daily_fr}\n\n"
             f"-- Fibonacci --\n"
             f"Niveau 0   : {fib_0:.2f} | 0.5 : {fib_05:.2f} | 1 : {fib_1:.2f}\n"
             f"Range swing: {swing_range:.2f} ({swing_range_pct:.2f}%)\n\n"
-            f"Pour activer le trading reel : desactiver DRY_RUN dans les secrets GitHub\n"
             f"Claude DayTrading Bot | {now}"
         )
         state["total_signals"] = state.get("total_signals", 0) + 1
@@ -471,18 +465,20 @@ def run():
 
     # ── 11. Notification Telegram ─────────────────────────────────────────────
     emoji = "📈" if direction == "buy" else "📉"
-    actual_margin = round(lots * price / LEVERAGE_REAL, 2)
+    actual_margin = round(lots * price * CONTRACT_SIZE / LEVERAGE_REAL, 2)
+    sl_dist_pct   = sl_distance / price * 100
+    tp_dist_pct   = abs(tp - price) / price * 100
     msg = (
         f"{emoji} TRADE EXECUTE — XAU/USD Bot 2 | Strategie 0.5\n\n"
         f"Direction  : {direction_fr}\n"
         f"Entree     : {price:.2f} USD (niveau 0.5)\n"
-        f"Stop-Loss  : {sl:.2f} ({SL_POINTS} pts — risque {real_risk_usdt:.0f} USDT)\n"
-        f"Take-Profit: {tp:.2f} ({TP_POINTS} pts — gain {real_profit_usdt:.0f} USDT)\n"
+        f"Stop-Loss  : {sl:.2f} (Fib 1 — {sl_dist_pct:.2f}% — risque {real_risk_usdt:.2f} USDT)\n"
+        f"Take-Profit: {tp:.2f} (Fib 0 — {tp_dist_pct:.2f}% — gain {real_profit_usdt:.2f} USDT)\n"
         f"R/R        : 1:{rr:.2f}\n"
         f"Lots       : {lots} | Marge : {actual_margin:.2f} USDT | Levier : {LEVERAGE_REAL}x\n\n"
-        f"-- Fibonacci (contexte signal) --\n"
+        f"-- Fibonacci --\n"
         f"Niveau 0   : {fib_0:.2f} (Swing High)\n"
-        f"Niveau 0.5 : {fib_05:.2f} (zone entree)\n"
+        f"Niveau 0.5 : {fib_05:.2f} (entree)\n"
         f"Niveau 1   : {fib_1:.2f} (Swing Low)\n"
         f"Range swing: {swing_range:.2f} ({swing_range_pct:.2f}%)\n\n"
         f"Position ID: {pos_id}\n"
