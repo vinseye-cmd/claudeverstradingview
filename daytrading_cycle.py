@@ -12,7 +12,9 @@ Strategie 0.5 (Fibonacci 50%) — mode 24h/5j :
 """
 
 import os
+import sys
 import json
+import time
 import requests
 import traceback
 import urllib3
@@ -51,21 +53,34 @@ DRY_RUN    = os.environ.get("DRY_RUN", "false").lower() == "true"
 
 
 # ─── Moonx REST API (JSON-RPC 2.0) ────────────────────────────────────────────
-def _moonx_call(method_name, arguments):
+def _moonx_call(method_name, arguments, _retries=3):
     payload = {
         "jsonrpc": "2.0",
         "method":  "tools/call",
         "params":  {"name": method_name, "arguments": arguments},
         "id": 1
     }
-    resp = requests.post(
-        f"{MOONX_URL}?token={MOONX_TOKEN}",
-        json=payload,
-        headers=MOONX_HEADERS,
-        timeout=20,
-        verify=False,
-    )
-    resp.raise_for_status()
+    last_exc = None
+    for attempt in range(1, _retries + 1):
+        try:
+            resp = requests.post(
+                f"{MOONX_URL}?token={MOONX_TOKEN}",
+                json=payload,
+                headers=MOONX_HEADERS,
+                timeout=30,
+                verify=False,
+            )
+            resp.raise_for_status()
+            break
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+            last_exc = exc
+            if attempt < _retries:
+                print(f"[_moonx_call:{method_name}] Tentative {attempt}/{_retries} echouee ({exc}) — retry dans 5s")
+                time.sleep(5)
+            else:
+                raise
+    else:
+        raise last_exc
     data = resp.json()
     print(f"[DEBUG:{method_name}] top-level keys: {list(data.keys())}")
 
@@ -554,6 +569,20 @@ if __name__ == "__main__":
     try:
         result = run()
         print(f"\n[Resultat] {json.dumps(result, indent=2)}")
+    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+        # Erreur reseau transitoire — on notifie mais on n'echoue pas le workflow
+        tb = traceback.format_exc()
+        print(f"[RESEAU] Timeout/connexion apres 3 tentatives: {exc}\n{tb}")
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage",
+                json={"chat_id": os.environ["TELEGRAM_CHAT_ID"],
+                      "text": f"⚠️ XAU/USD Bot — API Moonx indisponible (timeout)\nProchain cycle dans 5 min.\n{type(exc).__name__}: {str(exc)[:200]}"},
+                timeout=10,
+            )
+        except Exception:
+            pass
+        sys.exit(0)
     except Exception as exc:
         tb = traceback.format_exc()
         print(f"[ERREUR] {exc}\n{tb}")
